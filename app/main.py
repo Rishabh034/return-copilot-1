@@ -6,7 +6,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.database import create_db_pool
 from app.exceptions import AppError, app_error_handler
 from app.routers import rr_log_analyst_router
 
@@ -18,12 +17,10 @@ logging.basicConfig(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.db_pool = await create_db_pool()
     app.state.anthropic_client = anthropic.AsyncAnthropic(
         api_key=settings.anthropic_api_key,
     )
     yield
-    await app.state.db_pool.close()
 
 
 def create_app() -> FastAPI:

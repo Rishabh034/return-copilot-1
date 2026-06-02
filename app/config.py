@@ -2,7 +2,6 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    database_url: str = "postgresql://postgres:postgres@localhost:5432/clickpost_db"
     anthropic_api_key: str = ""
     clickpost_base_url: str = "https://www.clickpost.in"
     clickpost_api_key: str = ""
@@ -16,7 +15,7 @@ class Settings(BaseSettings):
     reserved_output_tokens: int = 4096
     protected_tail_messages: int = 4
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 settings = Settings()

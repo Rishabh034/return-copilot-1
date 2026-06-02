@@ -1,0 +1,18 @@
+[project]
+name = "rr-log-analyst"
+version = "0.1.0"
+description = "AI-Powered Recommendation Log & Config Q&A System"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
+    "pydantic-settings",
+    "asyncpg",
+    "sqlalchemy",
+    "alembic",
+    "psycopg2-binary",
+    "anthropic",
+    "httpx",
+    "python-dotenv",
+]

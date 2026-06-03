@@ -63,27 +63,42 @@ class Orchestrator:
                 if current_tools:
                     create_kwargs["tools"] = current_tools
 
-                response = await self.anthropic.messages.create(**create_kwargs)
+                text_parts: list[str] = []
+                tool_uses: list[dict] = []
+                current_tool_input_json = ""
+
+                async with self.anthropic.messages.stream(**create_kwargs) as stream:
+                    async for event in stream:
+                        if event.type == "content_block_start":
+                            block = event.content_block
+                            if block.type == "tool_use":
+                                tool_uses.append({
+                                    "id": block.id,
+                                    "name": block.name,
+                                    "input": {},
+                                })
+                                current_tool_input_json = ""
+                        elif event.type == "content_block_delta":
+                            delta = event.delta
+                            if delta.type == "text_delta":
+                                text_parts.append(delta.text)
+                                yield ("text_delta", {"delta": delta.text})
+                            elif delta.type == "input_json_delta":
+                                current_tool_input_json += delta.partial_json
+                        elif event.type == "content_block_stop":
+                            if tool_uses and current_tool_input_json:
+                                try:
+                                    tool_uses[-1]["input"] = json.loads(current_tool_input_json)
+                                except json.JSONDecodeError:
+                                    tool_uses[-1]["input"] = {}
+                                current_tool_input_json = ""
+
             except anthropic.APIError as e:
                 logger.exception("Claude API error on iteration %d", iteration)
                 yield ("error", {"code": "llm_error", "message": str(e)})
                 return
 
-            text_parts: list[str] = []
-            tool_uses: list[dict] = []
-
-            for block in response.content:
-                if block.type == "text":
-                    text_parts.append(block.text)
-                    yield ("text_delta", {"delta": block.text})
-                elif block.type == "tool_use":
-                    tool_uses.append({
-                        "id": block.id,
-                        "name": block.name,
-                        "input": block.input,
-                    })
-
-            combined_text = "\n".join(text_parts) if text_parts else None
+            combined_text = "".join(text_parts) if text_parts else None
 
             if not tool_uses:
                 yield ("done", {})

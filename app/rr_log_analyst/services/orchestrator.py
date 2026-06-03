@@ -28,6 +28,7 @@ class Orchestrator:
         user_text: str,
         system_prompt: str,
         model: str,
+        token: str,
     ) -> AsyncGenerator[tuple[str, dict[str, Any]], None]:
         """Main agentic loop. Yields (event_type, data) tuples for SSE."""
 
@@ -37,7 +38,7 @@ class Orchestrator:
 
         tool_schemas = get_claude_tool_schemas()
         tool_context = ToolContext(
-            enterprise_id=1,
+            token=token,
             clickpost_client=self.clickpost_client,
         )
 

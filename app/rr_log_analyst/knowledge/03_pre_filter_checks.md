@@ -39,7 +39,6 @@ For a given enterprise, only accounts that are active under their carrier partne
 ### System Location
 ```
 Dashboard → Settings → Courier → Integrations → [Enterprise]
-https://dashboard.clickpost.ai/settings/courier/integrations/<enterprise_id>
 ```
 
 ### Key Point
@@ -59,7 +58,6 @@ For a shipment from pincode `560037` to `302015`, only courier partners that hav
 Serviceability is configured per account:
 ```
 Dashboard → Settings → Courier → Integrations → [Enterprise] → Account → Serviceability → Drop
-https://dashboard.clickpost.ai/settings/courier/integrations/<enterprise_id>/account/<account_id>/serviceability/drop?orderType=PREPAID
 ```
 
 ### Key Point
@@ -81,7 +79,6 @@ An enterprise can configure a time-range threshold for a carrier — e.g. a carr
 Threshold configuration is per account in the serviceability section:
 ```
 Dashboard → Settings → Courier → Integrations → [Enterprise] → Account → Serviceability → Threshold Creation
-https://dashboard.clickpost.ai/settings/courier/integrations/<enterprise_id>/account/<account_id>/serviceability/threshold-creation
 ```
 
 ### Key Point
@@ -98,9 +95,6 @@ Removes accounts for which the drop pincode is classified as **Out of Delivery A
 
 ### How Clickpost Identifies ODA
 - ODA must be **enabled** in the allocation rule settings:
-  ```
-  https://dashboard.clickpost.ai/recommendation/allocation-rule/oda
-  ```
 - Once enabled, Clickpost monitors shipment tracking scans
 - If a tracking scan for a shipment contains an ODA event → the system **marks that pincode as ODA** for that carrier account
 

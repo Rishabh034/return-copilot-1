@@ -5,6 +5,7 @@ import anthropic
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.clients.clickpost import ClickpostClient
 from app.config import settings
 from app.exceptions import AppError, app_error_handler
 from app.routers import rr_log_analyst_router
@@ -20,7 +21,14 @@ async def lifespan(app: FastAPI):
     app.state.anthropic_client = anthropic.AsyncAnthropic(
         api_key=settings.anthropic_api_key,
     )
+    app.state.clickpost_client = ClickpostClient(
+        base_url=settings.clickpost_base_url,
+        timeout=settings.rr_analyst_tool_timeout,
+    )
+    try:
     yield
+    finally:
+        await app.state.clickpost_client.aclose()
 
 
 def create_app() -> FastAPI:

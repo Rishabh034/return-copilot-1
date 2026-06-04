@@ -13,10 +13,16 @@ class Tool(Protocol):
 
 
 class ToolContext:
-    """Passed to every tool — carries enterprise scope + shared clients."""
+    """Passed to every tool — carries the Clickpost auth token + shared clients.
 
-    def __init__(self, enterprise_id: int, clickpost_client: Any):
-        self.enterprise_id = enterprise_id
+    `token` is supplied per request by the caller (the dashboard sends it as an
+    `Authorization: Token <token>` header, which the agent API forwards here and
+    on to Clickpost). It both authenticates the Clickpost call and scopes it to
+    the right enterprise — no separate enterprise_id is needed.
+    """
+
+    def __init__(self, token: str, clickpost_client: Any):
+        self.token = token
         self.clickpost_client = clickpost_client
 
 
@@ -42,3 +48,9 @@ def get_claude_tool_schemas() -> list[dict]:
         {"name": t.name, "description": t.description, "input_schema": t.parameters}
         for t in _registry.values()
     ]
+
+
+# Import tool modules so their @register decorators run on package import.
+# Kept at the bottom to avoid a circular import (the modules import ToolContext
+# and register from this package, which are defined above).
+from app.rr_log_analyst.tools import accounts, rr_logs, rules  # noqa: E402,F401

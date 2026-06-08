@@ -53,4 +53,4 @@ def get_claude_tool_schemas() -> list[dict]:
 # Import tool modules so their @register decorators run on package import.
 # Kept at the bottom to avoid a circular import (the modules import ToolContext
 # and register from this package, which are defined above).
-from app.rr_log_analyst.tools import accounts, rr_logs, rules  # noqa: E402,F401
+from app.rr_log_analyst.tools import accounts, flow_config, rr_logs, rules  # noqa: E402,F401

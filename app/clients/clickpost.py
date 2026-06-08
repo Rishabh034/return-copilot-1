@@ -12,12 +12,15 @@ logger = logging.getLogger(__name__)
 # revalidate new APIs. See clickpost:
 #   - clickpost/views/request_logs/request_logs_view.py (RequestLogs)
 #   - dashboard/views/dashboard_selector_view.py (EnterpriseRecsInclusionFiltersConfigAPI)
+#   - dashboard/views/... (EnterpriseRecommendationFlowConfig — selector-recs-flow-config)
 #   - signup/views/account_details.py (CourierPartnerAccountDetailView)
 _RR_LOG_PATH = "/api/v1/clickpost/request_logs"
 
 _RULES_CONFIG_PATH = "/api/v1/selector-filters-config"
 
 _ACCOUNTS_PATH = "/api/v1/dashboard/courier_accounts"
+
+_RECOMMENDATION_CONFIG_PATH = "/api/v1/selector-recs-flow-config"
 
 # service_id for the Recommendation service (signup.object.enterprise_service
 # EnterpriseServiceConstant.RECOMMENDATION). request_logs is keyed by service.
@@ -90,9 +93,13 @@ class ClickpostClient:
         try:
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
+            print(e)
             raise ClickpostAPIError(f"Clickpost {path} failed: HTTP {resp.status_code}") from e
 
         data = resp.json()
+        logger.info("Clickpost response for %s: token=%s...%s status=%s meta=%s",
+                    path, token[:4] if token else "N/A", token[-4:] if token else "N/A",
+                    resp.status_code, data.get("meta") if isinstance(data, dict) else "non-dict")
         # These endpoints wrap responses in {"meta": {...success...}, "result": ...}
         # and return HTTP 200 even for app-level errors (e.g. unknown reference).
         # Surface that envelope failure as an error rather than silently empty data.
@@ -120,7 +127,19 @@ class ClickpostClient:
                 "reference_number": reference_number,
             },
         )
+    
+    async def get_rr_config(self, token: str) -> dict:
+        """Fetch the enterprise's Recommendation Flow Config.
 
+        Returns EnterpriseRecommendationFlowConfig — boolean toggles for which
+        pipeline stages (filters, OL, PBA/recs, ODA, load distribution, rule
+        iteration, etc.) are active for this enterprise.
+        """
+        return await self._get(
+            _RECOMMENDATION_CONFIG_PATH,
+            token,
+            {},
+        )
     # -- rules --------------------------------------------------------------
 
     async def list_rules(self, token: str, rule_type: str) -> Any:

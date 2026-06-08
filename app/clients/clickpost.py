@@ -94,7 +94,6 @@ class ClickpostClient:
         try:
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
-            print(e)
             raise ClickpostAPIError(f"Clickpost {path} failed: HTTP {resp.status_code}") from e
 
         data = resp.json()

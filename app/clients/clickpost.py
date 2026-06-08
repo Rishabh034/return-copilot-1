@@ -21,6 +21,7 @@ _RULES_CONFIG_PATH = "/api/v1/selector-filters-config"
 _ACCOUNTS_PATH = "/api/v1/dashboard/courier_accounts"
 
 _RECOMMENDATION_CONFIG_PATH = "/api/v1/selector-recs-flow-config"
+_RECOMMENDATION_API_PATH = "/api/v1/recommendation_api/"
 
 # service_id for the Recommendation service (signup.object.enterprise_service
 # EnterpriseServiceConstant.RECOMMENDATION). request_logs is keyed by service.
@@ -110,6 +111,60 @@ class ClickpostClient:
                 raise ClickpostAPIError(f"Clickpost {path}: {message}")
         return data
 
+    async def _post(
+        self,
+        path: str,
+        json_body: Any,
+        *,
+        key: str | None = None,
+        token: str | None = None,
+    ) -> Any:
+        """POST variant of _get. Supports both key-based (query param) and
+        token-based (header) auth — pass whichever the endpoint requires."""
+        url = f"{self._base_url}{path}"
+        params: dict[str, str] = {}
+        headers: dict[str, str] = {}
+        if key:
+            params["key"] = key
+        if token:
+            headers["Authorization"] = f"Token {token}"
+
+        logger.debug("Clickpost POST %s", url)
+        resp = await self._client.post(
+            url,
+            json=json_body,
+            params=params,
+            headers=headers or None,
+        )
+
+        if resp.status_code in (401, 403):
+            raise ClickpostPermissionError(
+                f"Authentication failed for {path} (HTTP {resp.status_code}). "
+                "Check the API key or token."
+            )
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise ClickpostAPIError(
+                f"Clickpost {path} failed: HTTP {resp.status_code}"
+            ) from e
+
+        data = resp.json()
+        logger.info(
+            "Clickpost POST response for %s: status=%s meta=%s",
+            path,
+            resp.status_code,
+            data.get("meta") if isinstance(data, dict) else "non-dict",
+        )
+        if isinstance(data, dict):
+            meta = data.get("meta")
+            if isinstance(meta, dict) and meta.get("success") is False:
+                message = (
+                    meta.get("message") or data.get("error") or "Clickpost request failed"
+                )
+                raise ClickpostAPIError(f"Clickpost {path}: {message}")
+        return data
+
     # -- RR logs ------------------------------------------------------------
 
     async def get_rr_log(self, token: str, reference_number: str) -> dict:
@@ -171,4 +226,14 @@ class ClickpostClient:
             _ACCOUNTS_PATH,
             token,
             {},
+        )
+
+    # -- recommendation engine ----------------------------------------------
+
+    async def run_recommendation(self, token: str, orders: list[dict]) -> Any:
+        """Run the recommendation engine for one or more orders."""
+        return await self._post(
+            _RECOMMENDATION_API_PATH,
+            json_body=orders,
+            token=token,
         )

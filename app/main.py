@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
         timeout=settings.rr_analyst_tool_timeout,
     )
     try:
-    yield
+        yield
     finally:
         await app.state.clickpost_client.aclose()
 

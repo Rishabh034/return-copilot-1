@@ -12,12 +12,16 @@ logger = logging.getLogger(__name__)
 # revalidate new APIs. See clickpost:
 #   - clickpost/views/request_logs/request_logs_view.py (RequestLogs)
 #   - dashboard/views/dashboard_selector_view.py (EnterpriseRecsInclusionFiltersConfigAPI)
+#   - dashboard/views/... (EnterpriseRecommendationFlowConfig — selector-recs-flow-config)
 #   - signup/views/account_details.py (CourierPartnerAccountDetailView)
 _RR_LOG_PATH = "/api/v1/clickpost/request_logs"
 
 _RULES_CONFIG_PATH = "/api/v1/selector-filters-config"
 
 _ACCOUNTS_PATH = "/api/v1/dashboard/courier_accounts"
+
+_RECOMMENDATION_CONFIG_PATH = "/api/v1/selector-recs-flow-config"
+_RECOMMENDATION_API_PATH = "/api/v1/recommendation_api/"
 
 # service_id for the Recommendation service (signup.object.enterprise_service
 # EnterpriseServiceConstant.RECOMMENDATION). request_logs is keyed by service.
@@ -93,6 +97,9 @@ class ClickpostClient:
             raise ClickpostAPIError(f"Clickpost {path} failed: HTTP {resp.status_code}") from e
 
         data = resp.json()
+        logger.info("Clickpost response for %s: token=%s...%s status=%s meta=%s",
+                    path, token[:4] if token else "N/A", token[-4:] if token else "N/A",
+                    resp.status_code, data.get("meta") if isinstance(data, dict) else "non-dict")
         # These endpoints wrap responses in {"meta": {...success...}, "result": ...}
         # and return HTTP 200 even for app-level errors (e.g. unknown reference).
         # Surface that envelope failure as an error rather than silently empty data.
@@ -100,6 +107,60 @@ class ClickpostClient:
             meta = data.get("meta")
             if isinstance(meta, dict) and meta.get("success") is False:
                 message = meta.get("message") or data.get("error") or "Clickpost request failed"
+                raise ClickpostAPIError(f"Clickpost {path}: {message}")
+        return data
+
+    async def _post(
+        self,
+        path: str,
+        json_body: Any,
+        *,
+        key: str | None = None,
+        token: str | None = None,
+    ) -> Any:
+        """POST variant of _get. Supports both key-based (query param) and
+        token-based (header) auth — pass whichever the endpoint requires."""
+        url = f"{self._base_url}{path}"
+        params: dict[str, str] = {}
+        headers: dict[str, str] = {}
+        if key:
+            params["key"] = key
+        if token:
+            headers["Authorization"] = f"Token {token}"
+
+        logger.debug("Clickpost POST %s", url)
+        resp = await self._client.post(
+            url,
+            json=json_body,
+            params=params,
+            headers=headers or None,
+        )
+
+        if resp.status_code in (401, 403):
+            raise ClickpostPermissionError(
+                f"Authentication failed for {path} (HTTP {resp.status_code}). "
+                "Check the API key or token."
+            )
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise ClickpostAPIError(
+                f"Clickpost {path} failed: HTTP {resp.status_code}"
+            ) from e
+
+        data = resp.json()
+        logger.info(
+            "Clickpost POST response for %s: status=%s meta=%s",
+            path,
+            resp.status_code,
+            data.get("meta") if isinstance(data, dict) else "non-dict",
+        )
+        if isinstance(data, dict):
+            meta = data.get("meta")
+            if isinstance(meta, dict) and meta.get("success") is False:
+                message = (
+                    meta.get("message") or data.get("error") or "Clickpost request failed"
+                )
                 raise ClickpostAPIError(f"Clickpost {path}: {message}")
         return data
 
@@ -120,7 +181,19 @@ class ClickpostClient:
                 "reference_number": reference_number,
             },
         )
+    
+    async def get_rr_config(self, token: str) -> dict:
+        """Fetch the enterprise's Recommendation Flow Config.
 
+        Returns EnterpriseRecommendationFlowConfig — boolean toggles for which
+        pipeline stages (filters, OL, PBA/recs, ODA, load distribution, rule
+        iteration, etc.) are active for this enterprise.
+        """
+        return await self._get(
+            _RECOMMENDATION_CONFIG_PATH,
+            token,
+            {},
+        )
     # -- rules --------------------------------------------------------------
 
     async def list_rules(self, token: str, rule_type: str) -> Any:
@@ -152,4 +225,14 @@ class ClickpostClient:
             _ACCOUNTS_PATH,
             token,
             {},
+        )
+
+    # -- recommendation engine ----------------------------------------------
+
+    async def run_recommendation(self, token: str, orders: list[dict]) -> Any:
+        """Run the recommendation engine for one or more orders."""
+        return await self._post(
+            _RECOMMENDATION_API_PATH,
+            json_body=orders,
+            token=token,
         )

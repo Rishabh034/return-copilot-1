@@ -24,6 +24,9 @@ def _shape_rr_log(reference_number: str, raw: Any) -> dict:
     body = raw
     result = raw.get("result")
     if isinstance(result, dict):
+        user_request = result.get("user_request")
+
+    if isinstance(result, dict):
         cp_response = result.get("clickpost_response")
         if isinstance(cp_response, dict):
             inner_list = cp_response.get("result")
@@ -41,6 +44,7 @@ def _shape_rr_log(reference_number: str, raw: Any) -> dict:
     preference_array = body.get("preference_array") or []
 
     shaped: dict[str, Any] = {
+        "user_request": user_request,
         "reference_number": reference_number,
         "filters_ran": filters_ran,
         "preference_array": preference_array,

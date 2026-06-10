@@ -22,6 +22,7 @@ _ACCOUNTS_PATH = "/api/v1/dashboard/courier_accounts"
 
 _RECOMMENDATION_CONFIG_PATH = "/api/v1/selector-recs-flow-config"
 _RECOMMENDATION_API_PATH = "/api/v1/recommendation_api/"
+_ACTIVITY_LOG_PATH = "/dashboard/api/v1/activity-log"
 
 # service_id for the Recommendation service (signup.object.enterprise_service
 # EnterpriseServiceConstant.RECOMMENDATION). request_logs is keyed by service.
@@ -204,7 +205,7 @@ class ClickpostClient:
             {"rule_type": rule_type},
         )
 
-    async def get_rule(self, token: str, rule_id: int) -> Any:
+    async def get_rule(self, token: str, rule_id: str) -> Any:
         """Fetch all rules for the enterprise (caller filters by id).
 
         The selector-filters-config endpoint filters by `rule_type` only, not by
@@ -236,3 +237,54 @@ class ClickpostClient:
             json_body=orders,
             token=token,
         )
+
+    # -- activity / audit logs ----------------------------------------------
+
+    async def get_audit_logs(
+        self,
+        token: str,
+        start_date: str,
+        end_date: str,
+        action_taken: str,
+        page_size: int = 100,
+    ) -> Any:
+        """Fetch dashboard activity logs from the analytics service.
+        Callers must keep the range to at most 7 days; the tool layer enforces this.
+        """
+        url = f"{self._base_url}{_ACTIVITY_LOG_PATH}"
+        params = {
+            "start_date": start_date,
+            "end_date": end_date,
+            "action_taken": action_taken,
+            "page_size": page_size
+        }
+        logger.debug("Clickpost GET %s params=%s", url, params)
+        resp = await self._client.get(url, params=params, headers={"Authorization": f"Token {token}"})
+
+        if resp.status_code in (401, 403):
+            raise ClickpostPermissionError(
+                f"Authentication failed for activity-log (HTTP {resp.status_code})."
+            )
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise ClickpostAPIError(
+                f"Clickpost activity-log failed: HTTP {resp.status_code}"
+            ) from e
+
+        if not resp.content.strip():
+            return {"data": [], "totalCount": 0, "pageSize": page_size}
+
+        try:
+            data = resp.json()
+        except ValueError as e:
+            raise ClickpostAPIError(
+                "Clickpost activity-log returned a non-JSON response"
+            ) from e
+
+        if isinstance(data, dict):
+            meta = data.get("meta")
+            if isinstance(meta, dict) and meta.get("success") is False:
+                message = meta.get("message") or data.get("error") or "Clickpost request failed"
+                raise ClickpostAPIError(f"Clickpost activity-log: {message}")
+        return data

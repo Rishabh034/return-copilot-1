@@ -1,7 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
 
-import anthropic
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -18,9 +17,6 @@ logging.basicConfig(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.anthropic_client = anthropic.AsyncAnthropic(
-        api_key=settings.anthropic_api_key,
-    )
     app.state.clickpost_client = ClickpostClient(
         base_url=settings.clickpost_base_url,
         timeout=settings.rr_analyst_tool_timeout,

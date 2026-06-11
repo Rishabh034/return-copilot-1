@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.rr_log_analyst.tools import ToolContext, register
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel
+
+from app.rr_log_analyst.tools.context import ToolContext
 
 _CONFIG_FIELDS = (
     "id",
@@ -21,6 +24,10 @@ _CONFIG_FIELDS = (
     "iterate_through_rules_filters",
     "iterate_through_rules_ordered_list",
 )
+
+
+class EmptyInput(BaseModel):
+    pass
 
 
 def _unwrap_result(raw: Any) -> dict | None:
@@ -55,7 +62,10 @@ def _derive_flow_summary(config: dict) -> str:
     if config.get("recs"):
         parts.append("PBA / performance-based allocation (recs) is enabled as the terminal layer when no OL matches.")
     else:
-        parts.append("PBA / recs terminal layer is disabled — when no OL matches, allocation comes from the matched filter's account_list order (or upstream pool).")
+        parts.append(
+            "PBA / recs terminal layer is disabled — when no OL matches, allocation comes from "
+            "the matched filter's account_list order (or upstream pool)."
+        )
 
     if config.get("iterate_through_rules_filters"):
         parts.append("Rule iteration is ON for Filter rules (empty result moves to next filter rule).")
@@ -88,20 +98,28 @@ def _shape_flow_config(raw: Any) -> dict[str, Any]:
     return shaped
 
 
-@register
-class GetEnterpriseFlowConfigTool:
-    name = "get_enterprise_flow_config"
-    description = (
-        "Fetch the enterprise's Recommendation Flow Config (EnterpriseRecommendationFlowConfig). "
-        "Returns boolean toggles that define which pipeline stages this enterprise uses: Filter rules, "
-        "Ordered Lists, PBA/recs, ODA pre-filter, load distribution, rule iteration, recency bias, "
-        "intelligent feedback, and whether the legacy or RecsV2 flow is active. "
-        "Call this early when explaining allocation behaviour — it tells you which layers can run "
-        "and how to interpret an RR log (e.g. no OL stage if ordered_list=false, no PBA if recs=false, "
-        "whether empty filter results trigger iteration). Does not require a reference number."
-    )
-    parameters = {"type": "object", "properties": {}}
+async def _get_enterprise_flow_config(context: ToolContext) -> dict[str, Any]:
+    raw = await context.clickpost_client.get_rr_config(token=context.token)
+    return _shape_flow_config(raw)
 
-    async def execute(self, args: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-        raw = await context.clickpost_client.get_rr_config(token=context.token)
-        return _shape_flow_config(raw)
+
+def build_tools(context: ToolContext) -> list[StructuredTool]:
+    async def get_enterprise_flow_config() -> dict[str, Any]:
+        return await _get_enterprise_flow_config(context)
+
+    return [
+        StructuredTool.from_function(
+            coroutine=get_enterprise_flow_config,
+            name="get_enterprise_flow_config",
+            description=(
+                "Fetch the enterprise's Recommendation Flow Config (EnterpriseRecommendationFlowConfig). "
+                "Returns boolean toggles that define which pipeline stages this enterprise uses: Filter rules, "
+                "Ordered Lists, PBA/recs, ODA pre-filter, load distribution, rule iteration, recency bias, "
+                "intelligent feedback, and whether the legacy or RecsV2 flow is active. "
+                "Call this early when explaining allocation behaviour — it tells you which layers can run "
+                "and how to interpret an RR log (e.g. no OL stage if ordered_list=false, no PBA if recs=false, "
+                "whether empty filter results trigger iteration). Does not require a reference number."
+            ),
+            args_schema=EmptyInput,
+        ),
+    ]

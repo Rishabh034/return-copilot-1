@@ -11,13 +11,12 @@ _ROLE_PREAMBLE = (
 
 
 def _load_knowledge_files() -> str:
-    """Load all .md files from the knowledge directory, sorted by filename."""
     if not _KNOWLEDGE_DIR.is_dir():
         return ""
     files = sorted(_KNOWLEDGE_DIR.glob("*.md"))
     sections: list[str] = []
-    for f in files:
-        content = f.read_text().strip()
+    for path in files:
+        content = path.read_text().strip()
         if content:
             sections.append(content)
     return "\n\n".join(sections)

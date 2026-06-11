@@ -19,5 +19,10 @@ class AuthError(AppError):
         super().__init__(message, status_code=401)
 
 
+class BadRequestError(AppError):
+    def __init__(self, message: str = "Bad request"):
+        super().__init__(message, status_code=400)
+
+
 async def app_error_handler(_request: Request, exc: AppError) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content={"error": exc.message})

@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 #   - clickpost/views/request_logs/request_logs_view.py (RequestLogs)
 #   - dashboard/views/dashboard_selector_view.py (EnterpriseRecsInclusionFiltersConfigAPI)
 #   - dashboard/views/... (EnterpriseRecommendationFlowConfig — selector-recs-flow-config)
+#   - dashboard/views/dashboard_selector_view.py (EnterpriseLoadDistribution*ConfigAPI)
 #   - signup/views/account_details.py (CourierPartnerAccountDetailView)
 _RR_LOG_PATH = "/api/v1/clickpost/request_logs"
 
@@ -23,6 +24,10 @@ _ACCOUNTS_PATH = "/api/v1/dashboard/courier_accounts"
 _RECOMMENDATION_CONFIG_PATH = "/api/v1/selector-recs-flow-config"
 _RECOMMENDATION_API_PATH = "/api/v1/recommendation_api/"
 _ACTIVITY_LOG_PATH = "/dashboard/api/v1/activity-log"
+
+_LOAD_DISTRIBUTION_CONFIG_PATH = "/api/v1/selector-load-distribution-config"
+_LOAD_DISTRIBUTION_REVERSE_CONFIG_PATH = "/api/v1/selector-load-distribution-reverse-config"
+_LOAD_DISTRIBUTION_FILTER_CONFIG_PATH = "/api/v1/dashboard/selector-load-distribution-v2-config"
 
 # service_id for the Recommendation service (signup.object.enterprise_service
 # EnterpriseServiceConstant.RECOMMENDATION). request_logs is keyed by service.
@@ -226,6 +231,24 @@ class ClickpostClient:
             _ACCOUNTS_PATH,
             token,
             {},
+        )
+
+    # -- load distribution --------------------------------------------------
+
+    async def get_load_distribution_config(self, token: str) -> Any:
+        """Fetch forward load distribution config (account-level % and daily caps)."""
+        return await self._get(_LOAD_DISTRIBUTION_CONFIG_PATH, token, {})
+
+    async def get_load_distribution_reverse_config(self, token: str) -> Any:
+        """Fetch reverse (RVP) load distribution config."""
+        return await self._get(_LOAD_DISTRIBUTION_REVERSE_CONFIG_PATH, token, {})
+
+    async def get_load_distribution_filter_config(self, token: str, filter_id: int) -> Any:
+        """Fetch per-filter (lane-level) load distribution config for a Filter rule."""
+        return await self._get(
+            _LOAD_DISTRIBUTION_FILTER_CONFIG_PATH,
+            token,
+            {"filter_id": filter_id},
         )
 
     # -- recommendation engine ----------------------------------------------

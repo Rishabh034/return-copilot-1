@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.rr_log_analyst.tools.context import ToolContext
+
+
+class EmptyInput(BaseModel):
+    pass
 
 _CONFIG_FIELDS = (
     "id",
@@ -25,9 +29,48 @@ _CONFIG_FIELDS = (
     "iterate_through_rules_ordered_list",
 )
 
+FlowConfigFlag = Literal[
+    "enabled",
+    "old_flow",
+    "filters",
+    "ordered_list",
+    "recs",
+    "oda_filter",
+    "reverse_wnf",
+    "load_distribution",
+    "load_distribution_reverse",
+    "load_distribution_filter",
+    "recency_bias",
+    "intelligent_feedback",
+    "iterate_through_rules_filters",
+    "iterate_through_rules_ordered_list",
+]
 
-class EmptyInput(BaseModel):
-    pass
+_FLAG_HINTS: dict[str, str] = {
+    "enabled": "Master switch — recommendation flow active for this enterprise.",
+    "old_flow": "Legacy allocation flow instead of RecsV2.",
+    "filters": "Filter rules eligibility stage.",
+    "ordered_list": "Ordered List rules stage.",
+    "recs": "PBA / performance-based allocation terminal layer.",
+    "oda_filter": "ODA pinched-accounts pre-filter.",
+    "reverse_wnf": "Reverse WNF handling.",
+    "load_distribution": "Forward terminal load distribution.",
+    "load_distribution_reverse": "Reverse (RVP) terminal load distribution.",
+    "load_distribution_filter": "Per-filter lane load distribution.",
+    "recency_bias": "Recency bias ranking.",
+    "intelligent_feedback": "Intelligent feedback / performance allocation.",
+    "iterate_through_rules_filters": "Iterate to next filter rule on empty result.",
+    "iterate_through_rules_ordered_list": "Iterate to next OL rule on empty result.",
+}
+
+
+class GetFlowConfigFlagInput(BaseModel):
+    flag: FlowConfigFlag = Field(
+        description=(
+            "Single flow-config toggle to look up, e.g. 'load_distribution', 'ordered_list', 'recs'. "
+            "Use when the user asks about one specific setting."
+        ),
+    )
 
 
 def _unwrap_result(raw: Any) -> dict | None:
@@ -88,38 +131,72 @@ def _derive_flow_summary(config: dict) -> str:
     return " ".join(parts)
 
 
-def _shape_flow_config(raw: Any) -> dict[str, Any]:
+async def _fetch_flow_config(context: ToolContext) -> dict[str, Any]:
+    raw = await context.clickpost_client.get_rr_config(token=context.token)
     config = _unwrap_result(raw)
     if not config:
         return {"error": "Unexpected flow-config response shape", "raw": raw}
+    return config
 
+
+def _shape_flow_config(config: dict) -> dict[str, Any]:
     shaped = {field: config.get(field) for field in _CONFIG_FIELDS}
     shaped["flow_summary"] = _derive_flow_summary(config)
     return shaped
 
 
-async def _get_enterprise_flow_config(context: ToolContext) -> dict[str, Any]:
-    raw = await context.clickpost_client.get_rr_config(token=context.token)
-    return _shape_flow_config(raw)
-
-
 def build_tools(context: ToolContext) -> list[StructuredTool]:
     async def get_enterprise_flow_config() -> dict[str, Any]:
-        return await _get_enterprise_flow_config(context)
+        config = await _fetch_flow_config(context)
+        if "error" in config:
+            return config
+        return _shape_flow_config(config)
+
+    async def summarize_flow_config() -> dict[str, Any]:
+        config = await _fetch_flow_config(context)
+        if "error" in config:
+            return config
+        flags = {field: config.get(field) for field in _CONFIG_FIELDS if field != "id"}
+        return {
+            "flow_summary": _derive_flow_summary(config),
+            "flags": flags,
+            "hint": "Use get_flow_config_flag(flag) to look up one specific toggle.",
+        }
+
+    async def get_flow_config_flag(flag: FlowConfigFlag) -> dict[str, Any]:
+        config = await _fetch_flow_config(context)
+        if "error" in config:
+            return config
+        return {
+            "flag": flag,
+            "value": config.get(flag),
+            "description": _FLAG_HINTS.get(flag, ""),
+            "flow_summary": _derive_flow_summary(config),
+        }
 
     return [
         StructuredTool.from_function(
             coroutine=get_enterprise_flow_config,
             name="get_enterprise_flow_config",
             description=(
-                "Fetch the enterprise's Recommendation Flow Config (EnterpriseRecommendationFlowConfig). "
-                "Returns boolean toggles that define which pipeline stages this enterprise uses: Filter rules, "
-                "Ordered Lists, PBA/recs, ODA pre-filter, load distribution, rule iteration, recency bias, "
-                "intelligent feedback, and whether the legacy or RecsV2 flow is active. "
-                "Call this early when explaining allocation behaviour — it tells you which layers can run "
-                "and how to interpret an RR log (e.g. no OL stage if ordered_list=false, no PBA if recs=false, "
-                "whether empty filter results trigger iteration). Does not require a reference number."
+                "PRIMARY — Full enterprise Recommendation Flow Config: all boolean toggles (filters, "
+                "ordered_list, recs, load_distribution*, rule iteration, etc.) plus flow_summary. "
+                "Call early when explaining pipeline behaviour."
             ),
             args_schema=EmptyInput,
+        ),
+        StructuredTool.from_function(
+            coroutine=summarize_flow_config,
+            name="summarize_flow_config",
+            description="SUB-TOOL — Compact flow config (flow_summary + flags only, same as primary).",
+            args_schema=EmptyInput,
+        ),
+        StructuredTool.from_function(
+            coroutine=get_flow_config_flag,
+            name="get_flow_config_flag",
+            description=(
+                "SUB-TOOL — Look up one flow-config flag, e.g. load_distribution, ordered_list, recs."
+            ),
+            args_schema=GetFlowConfigFlagInput,
         ),
     ]

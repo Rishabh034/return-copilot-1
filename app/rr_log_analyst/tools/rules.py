@@ -5,11 +5,38 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from app.rr_log_analyst.tools._common import as_list, shape_rule
+from app.rr_log_analyst.tools._common import as_list, compact_rule_summary, shape_rule
 from app.rr_log_analyst.tools.context import ToolContext
 from app.rr_log_analyst.tools.flow_config import EmptyInput
 
 _PINCODE_KEYS = {"pickup_pincode", "drop_pincode"}
+
+
+class SearchRulesInput(BaseModel):
+    priority: int | None = Field(
+        default=None,
+        description="Exact priority number to match (e.g. 12 returns only priority-12 rules).",
+    )
+    name: str = Field(
+        default="",
+        description="Substring to match against rule name (case-insensitive).",
+    )
+    rule_id: str = Field(
+        default="",
+        description="Exact rule id to match.",
+    )
+    pickup_pincode: str = Field(
+        default="",
+        description="Return rules whose conditions reference this pickup pincode.",
+    )
+    drop_pincode: str = Field(
+        default="",
+        description="Return rules whose conditions reference this drop pincode.",
+    )
+    enabled: bool | None = Field(
+        default=None,
+        description="Filter by enabled status (true/false). Omit to ignore.",
+    )
 
 
 class GetFilterRuleInput(BaseModel):
@@ -55,18 +82,190 @@ def _condition_pincodes(condition: dict) -> list[str]:
     return [p.strip() for p in value.split(",") if p.strip()]
 
 
-async def _list_filter_rules(context: ToolContext) -> dict[str, Any]:
-    raw = await context.clickpost_client.list_rules(token=context.token, rule_type="FILTER")
-    rules = [shape_rule(r) for r in as_list(raw)]
+def _pincode_matches(condition: dict, pincode: str) -> bool:
+    pincodes = _condition_pincodes(condition)
+    op = (condition.get("op") or "").upper()
+    return pincode in pincodes or (op == "CONTAINS" and any(pincode in p for p in pincodes))
+
+
+def _search_criteria_provided(
+    *,
+    priority: int | None,
+    name: str,
+    rule_id: str,
+    pickup_pincode: str,
+    drop_pincode: str,
+    enabled: bool | None,
+) -> bool:
+    return any(
+        (
+            priority is not None,
+            bool(name.strip()),
+            bool(rule_id.strip()),
+            bool(pickup_pincode.strip()),
+            bool(drop_pincode.strip()),
+            enabled is not None,
+        )
+    )
+
+
+def _applied_filters(
+    *,
+    priority: int | None,
+    name: str,
+    rule_id: str,
+    pickup_pincode: str,
+    drop_pincode: str,
+    enabled: bool | None,
+) -> dict[str, Any]:
+    applied: dict[str, Any] = {}
+    if priority is not None:
+        applied["priority"] = priority
+    if name.strip():
+        applied["name"] = name.strip()
+    if rule_id.strip():
+        applied["rule_id"] = rule_id.strip()
+    if pickup_pincode.strip():
+        applied["pickup_pincode"] = pickup_pincode.strip()
+    if drop_pincode.strip():
+        applied["drop_pincode"] = drop_pincode.strip()
+    if enabled is not None:
+        applied["enabled"] = enabled
+    return applied
+
+
+def _rule_matches_search(
+    raw_rule: dict,
+    *,
+    priority: int | None,
+    name: str,
+    rule_id: str,
+    pickup_pincode: str,
+    drop_pincode: str,
+    enabled: bool | None,
+) -> bool:
+    rule = shape_rule(raw_rule)
+
+    if priority is not None and rule.get("priority") != priority:
+        return False
+
+    name_q = name.strip().lower()
+    if name_q:
+        rule_name = (rule.get("name") or "").lower()
+        if name_q not in rule_name:
+            return False
+
+    rule_id_q = rule_id.strip()
+    if rule_id_q and str(rule.get("id")) != rule_id_q:
+        return False
+
+    if enabled is not None and rule.get("enabled") is not enabled:
+        return False
+
+    pickup = pickup_pincode.strip()
+    drop = drop_pincode.strip()
+    if pickup or drop:
+        wanted: dict[str, str] = {}
+        if pickup:
+            wanted["pickup_pincode"] = pickup
+        if drop:
+            wanted["drop_pincode"] = drop
+
+        matched_pincode = False
+        for cond in rule["rule"]:
+            key = cond.get("key")
+            if key not in _PINCODE_KEYS or key not in wanted:
+                continue
+            if _pincode_matches(cond, wanted[key]):
+                matched_pincode = True
+                break
+        if not matched_pincode:
+            return False
+
+    return True
+
+
+async def _fetch_rules_by_type(context: ToolContext, rule_type: str) -> list[dict]:
+    raw = await context.clickpost_client.list_rules(token=context.token, rule_type=rule_type)
+    return as_list(raw)
+
+
+async def _search_rules(
+    context: ToolContext,
+    rule_type: str,
+    *,
+    priority: int | None = None,
+    name: str = "",
+    rule_id: str = "",
+    pickup_pincode: str = "",
+    drop_pincode: str = "",
+    enabled: bool | None = None,
+) -> dict[str, Any]:
+    if not _search_criteria_provided(
+        priority=priority,
+        name=name,
+        rule_id=rule_id,
+        pickup_pincode=pickup_pincode,
+        drop_pincode=drop_pincode,
+        enabled=enabled,
+    ):
+        return {
+            "error": (
+                "Provide at least one search filter: priority, name, rule_id, pickup_pincode, "
+                "drop_pincode, or enabled. For a compact overview of all rules, use "
+                "summarize_filter_rules or summarize_ordered_list_rules instead."
+            )
+        }
+
+    raw_rules = await _fetch_rules_by_type(context, rule_type)
+    matching = [
+        shape_rule(raw_rule)
+        for raw_rule in raw_rules
+        if _rule_matches_search(
+            raw_rule,
+            priority=priority,
+            name=name,
+            rule_id=rule_id,
+            pickup_pincode=pickup_pincode,
+            drop_pincode=drop_pincode,
+            enabled=enabled,
+        )
+    ]
+    matching.sort(key=lambda r: (r.get("priority") is None, r.get("priority")))
+
+    return {
+        "rule_type": rule_type,
+        "filters_applied": _applied_filters(
+            priority=priority,
+            name=name,
+            rule_id=rule_id,
+            pickup_pincode=pickup_pincode,
+            drop_pincode=drop_pincode,
+            enabled=enabled,
+        ),
+        "total_matching": len(matching),
+        "rules": matching,
+    }
+
+
+async def _list_rules(context: ToolContext, rule_type: str) -> dict[str, Any]:
+    raw_rules = await _fetch_rules_by_type(context, rule_type)
+    rules = [shape_rule(raw_rule) for raw_rule in raw_rules]
     rules.sort(key=lambda r: (r.get("priority") is None, r.get("priority")))
     return {"total_rules": len(rules), "rules": rules}
 
 
-async def _list_ordered_list_rules(context: ToolContext) -> dict[str, Any]:
-    raw = await context.clickpost_client.list_rules(token=context.token, rule_type="ORDERED_LIST")
-    rules = [shape_rule(r) for r in as_list(raw)]
-    rules.sort(key=lambda r: (r.get("priority") is None, r.get("priority")))
-    return {"total_rules": len(rules), "rules": rules}
+async def _summarize_rules(context: ToolContext, rule_type: str) -> dict[str, Any]:
+    raw_rules = await _fetch_rules_by_type(context, rule_type)
+    summaries = [compact_rule_summary(shape_rule(raw_rule)) for raw_rule in raw_rules]
+    summaries.sort(key=lambda r: (r.get("priority") is None, r.get("priority")))
+    return {
+        "rule_type": rule_type,
+        "total_rules": len(summaries),
+        "rules": summaries,
+        "hint": "Compact index only (id, name, priority, enabled, condition_keys). "
+        "Use search_filter_rules / search_ordered_list_rules with filters for full rule details.",
+    }
 
 
 def _rule_matches_id(rule: dict, rule_id: str) -> bool:
@@ -169,8 +368,8 @@ async def _find_rules_for_pincode(
     if drop:
         wanted["drop_pincode"] = drop
 
-    filters = as_list(await context.clickpost_client.list_rules(token=context.token, rule_type="FILTER"))
-    ols = as_list(await context.clickpost_client.list_rules(token=context.token, rule_type="ORDERED_LIST"))
+    filters = await _fetch_rules_by_type(context, "FILTER")
+    ols = await _fetch_rules_by_type(context, "ORDERED_LIST")
 
     matching: list[dict] = []
     for raw_rule in [*filters, *ols]:
@@ -180,11 +379,8 @@ async def _find_rules_for_pincode(
             key = cond.get("key")
             if key not in _PINCODE_KEYS or key not in wanted:
                 continue
-            pincodes = _condition_pincodes(cond)
             target = wanted[key]
-            op = (cond.get("op") or "").upper()
-            hit = target in pincodes or (op == "CONTAINS" and any(target in p for p in pincodes))
-            if hit:
+            if _pincode_matches(cond, target):
                 matched_on.append({"key": key, "op": cond.get("op"), "pincode": target})
         if matched_on:
             matching.append({**rule, "matched_on": matched_on})
@@ -203,8 +399,8 @@ async def _get_ordered_list_rule_by_name(context: ToolContext, name: str) -> dic
 
 
 async def _find_rules_for_carrier(context: ToolContext, account_id: int) -> dict[str, Any]:
-    filters = as_list(await context.clickpost_client.list_rules(token=context.token, rule_type="FILTER"))
-    ols = as_list(await context.clickpost_client.list_rules(token=context.token, rule_type="ORDERED_LIST"))
+    filters = await _fetch_rules_by_type(context, "FILTER")
+    ols = await _fetch_rules_by_type(context, "ORDERED_LIST")
 
     matching: list[dict] = []
     for raw_rule in [*filters, *ols]:
@@ -219,10 +415,54 @@ async def _find_rules_for_carrier(context: ToolContext, account_id: int) -> dict
 
 def build_tools(context: ToolContext) -> list[StructuredTool]:
     async def list_filter_rules() -> dict[str, Any]:
-        return await _list_filter_rules(context)
+        return await _list_rules(context, "FILTER")
 
     async def list_ordered_list_rules() -> dict[str, Any]:
-        return await _list_ordered_list_rules(context)
+        return await _list_rules(context, "ORDERED_LIST")
+
+    async def search_filter_rules(
+        priority: int | None = None,
+        name: str = "",
+        rule_id: str = "",
+        pickup_pincode: str = "",
+        drop_pincode: str = "",
+        enabled: bool | None = None,
+    ) -> dict[str, Any]:
+        return await _search_rules(
+            context,
+            "FILTER",
+            priority=priority,
+            name=name,
+            rule_id=rule_id,
+            pickup_pincode=pickup_pincode,
+            drop_pincode=drop_pincode,
+            enabled=enabled,
+        )
+
+    async def search_ordered_list_rules(
+        priority: int | None = None,
+        name: str = "",
+        rule_id: str = "",
+        pickup_pincode: str = "",
+        drop_pincode: str = "",
+        enabled: bool | None = None,
+    ) -> dict[str, Any]:
+        return await _search_rules(
+            context,
+            "ORDERED_LIST",
+            priority=priority,
+            name=name,
+            rule_id=rule_id,
+            pickup_pincode=pickup_pincode,
+            drop_pincode=drop_pincode,
+            enabled=enabled,
+        )
+
+    async def summarize_filter_rules() -> dict[str, Any]:
+        return await _summarize_rules(context, "FILTER")
+
+    async def summarize_ordered_list_rules() -> dict[str, Any]:
+        return await _summarize_rules(context, "ORDERED_LIST")
 
     async def get_filter_rule(rule_id: str) -> dict[str, Any]:
         return await _get_filter_rule(context, rule_id)
@@ -242,14 +482,19 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
     async def find_rule(query: str) -> dict[str, Any]:
         return await _find_rule(context, query)
 
+    _sub_search_hint = (
+        "Sub-tool: use when list_* is too large or you need a subset. Requires at least one filter: "
+        "priority, name, rule_id, pickup_pincode, drop_pincode, or enabled."
+    )
+
     return [
         StructuredTool.from_function(
             coroutine=list_filter_rules,
             name="list_filter_rules",
             description=(
-                "List all Filter rules configured for the enterprise, in priority order. Filter rules "
-                "are the eligibility gate (AND conditions; first match wins) — each yields a pool of "
-                "eligible carrier accounts. Use to get an overview or to locate a rule by name/priority."
+                "PRIMARY — List all Filter rules in priority order with full details (conditions, "
+                "priority, account_list). Use first when you need the complete rule set. If the result "
+                "is too large, use search_filter_rules or summarize_filter_rules instead."
             ),
             args_schema=EmptyInput,
         ),
@@ -257,9 +502,9 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
             coroutine=list_ordered_list_rules,
             name="list_ordered_list_rules",
             description=(
-                "List all Ordered List (OL) rules configured for the enterprise, in priority order. OL "
-                "rules define carrier priority order for a specific route; final allocation is the "
-                "intersection of the OL's account_list with the matched filter's eligible pool, in OL order."
+                "PRIMARY — List all Ordered List rules in priority order with full details. Use first "
+                "for a complete OL overview. If too large, use search_ordered_list_rules or "
+                "summarize_ordered_list_rules."
             ),
             args_schema=EmptyInput,
         ),
@@ -314,5 +559,37 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
                 "name or account code, call get_account_info first to resolve the account_id."
             ),
             args_schema=FindRulesForCarrierInput,
+        ),
+        StructuredTool.from_function(
+            coroutine=search_filter_rules,
+            name="search_filter_rules",
+            description=(
+                "SUB-TOOL — Filter rules by priority, name, rule_id, pincode, or enabled. "
+                "Example: priority=12 returns only priority-12 rules with full details. " + _sub_search_hint
+            ),
+            args_schema=SearchRulesInput,
+        ),
+        StructuredTool.from_function(
+            coroutine=search_ordered_list_rules,
+            name="search_ordered_list_rules",
+            description="SUB-TOOL — Same filters as search_filter_rules but for Ordered List rules. " + _sub_search_hint,
+            args_schema=SearchRulesInput,
+        ),
+        StructuredTool.from_function(
+            coroutine=summarize_filter_rules,
+            name="summarize_filter_rules",
+            description=(
+                "SUB-TOOL — Compact index of all Filter rules (id, name, priority, enabled, "
+                "condition_keys only). Use when list_filter_rules is too large."
+            ),
+            args_schema=EmptyInput,
+        ),
+        StructuredTool.from_function(
+            coroutine=summarize_ordered_list_rules,
+            name="summarize_ordered_list_rules",
+            description=(
+                "SUB-TOOL — Compact index of all OL rules. Use when list_ordered_list_rules is too large."
+            ),
+            args_schema=EmptyInput,
         ),
     ]

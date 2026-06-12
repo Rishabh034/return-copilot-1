@@ -36,9 +36,9 @@ e.g. Delhivery_Maratahalli(Delhivery(1005979))
 ## Key Principles
 
 ### Clickpost operates at Account level, not CPID level
-- The engine **never works on CPID** — CPID is just the carrier grouping
-- Every check, rule, and allocation decision is made at the **Account ID** level
-- Saying "use Delhivery" is meaningless to Clickpost — it needs a specific Account ID
+- CPID is the carrier grouping; rules, serviceability, blacklists, and allocation decisions are made at the **Account ID** level
+- **Exception:** ODA is stored per CPID — an ODA pincode removes all accounts under that carrier
+- Saying "use Delhivery" is meaningless to Clickpost rules — it needs a specific Account ID
 
 ### One CPID → Multiple Accounts
 A carrier (CPID) can offer multiple services, each represented as a separate account:
@@ -86,11 +86,12 @@ Account (Account ID)
   https://dashboard.clickpost.ai/settings/courier/integrations/<cpid>/account/<account_id>/serviceability/threshold-creation
   ```
 
-#### ODA — Out of Delivery Area (sub-config of Serviceability)
-- Pincodes where delivery is difficult/restricted for this specific account
+#### ODA — Out of Delivery Area
+- Pincodes where delivery is difficult/restricted for a carrier
 - ODA is scan-driven — system marks a pincode ODA when a tracking scan contains an ODA event
-- ODA must be enabled at: `https://dashboard.clickpost.ai/recommendation/allocation-rule/oda`
-- Removal: manual via support ticket (no self-serve flow today)
+- **Stored per courier partner (CPID) + enterprise + pincode** (`OdaPincodes` model has `courier_partner_id`, not account_id). When a drop pincode is ODA for a carrier, **all accounts of that carrier** are removed — this is the one engine check that operates at CPID level
+- ODA removal in the engine only runs if `oda_filter` is enabled in the enterprise's recommendation flow config (default off); enable via `https://dashboard.clickpost.ai/recommendation/allocation-rule/oda`
+- Removal of a pincode from ODA: manual via support ticket (no self-serve flow today)
 
 ### Pricing
 - Rate card specific to the brand's contract with this account
@@ -131,5 +132,5 @@ https://dashboard.clickpost.ai/settings/courier/integrations/<cpid>/account/<acc
 
 | Level | Identifier | Clickpost Uses? | Can Configure? |
 |-------|------------|----------------|----------------|
-| Carrier | CPID | No — grouping only | No |
-| Account | Account ID | Yes — all operations | Yes — serviceability, pricing, SLA |
+| Carrier | CPID | Grouping + ODA marking only | ODA (scan-driven) |
+| Account | Account ID | Yes — rules, serviceability, allocation | Yes — serviceability, pricing, SLA |

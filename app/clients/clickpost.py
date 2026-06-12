@@ -79,7 +79,7 @@ class ClickpostClient:
         url = f"{self._base_url}{path}"
         # Drop None-valued params so we don't send empty query keys.
         clean = {k: v for k, v in params.items() if v is not None}
-        logger.debug("Clickpost GET %s params=%s", url, clean)
+        # logger.debug("Clickpost GET %s params=%s", url, clean)
         # The token authenticates + scopes the request; forward it as-is.
         resp = await self._client.get(
             url,

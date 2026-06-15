@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
@@ -121,6 +121,18 @@ class ConversationStore:
             "message_count": message_count,
             "storage_bytes": storage_bytes,
         }
+
+    def purge_stale(self, max_age: timedelta = timedelta(hours=24)) -> int:
+        """Remove conversations not updated within *max_age*. Returns count deleted."""
+        cutoff = datetime.now(timezone.utc) - max_age
+        stale_ids = [
+            cid
+            for cid, conv in self._conversations.items()
+            if conv.updated_at < cutoff
+        ]
+        for cid in stale_ids:
+            del self._conversations[cid]
+        return len(stale_ids)
 
     def storage_stats_for_token(self, token: str) -> dict[str, Any]:
         conversations = [

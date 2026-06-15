@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str
     clickpost_base_url: str = "https://internal.clickpost.in"
 
-    rr_analyst_model: str = "claude-sonnet-4-20250514"
+    rr_analyst_model: str = "claude-sonnet-4-6"
     rr_analyst_max_output_tokens: int = 4096
     rr_analyst_max_iterations: int = 10
     rr_analyst_tool_timeout: int = 30

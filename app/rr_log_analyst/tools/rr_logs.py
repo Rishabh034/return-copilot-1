@@ -103,29 +103,31 @@ class FetchRRLogByShipmentInput(BaseModel):
     awb: str | None = Field(
         default=None,
         description=(
-            "AWB / waybill number. Required on every call (including date retries). "
-            "Provide this OR order_id, not both."
+            "AWB / waybill number. Not mandatory when both start_date and end_date are "
+            "supplied; otherwise provide this OR order_id. Never provide both awb and order_id."
         ),
     )
     order_id: str | None = Field(
         default=None,
         description=(
-            "Dashboard order ID. Required on every call (including date retries). "
-            "Provide this OR awb, not both."
+            "Dashboard order ID. Not mandatory when both start_date and end_date are "
+            "supplied; otherwise provide this OR awb. Never provide both awb and order_id."
         ),
     )
     start_date: str | None = Field(
         default=None,
         description=(
-            "Optional shipment registration start (inclusive), e.g. 2026-06-01 or "
-            "2026-06-01T00:00:00+05:30. If omitted with end_date, defaults to the last 90 days."
+            "Shipment registration start (inclusive), e.g. 2026-06-01 or "
+            "2026-06-01T00:00:00+05:30. Supplying start_date together with end_date makes "
+            "awb/order_id optional. If omitted with end_date, defaults to the last 90 days."
         ),
     )
     end_date: str | None = Field(
         default=None,
         description=(
-            "Optional shipment registration end (inclusive), e.g. 2026-06-13 or "
-            "2026-06-13T23:59:59+05:30. If omitted with start_date, defaults to the last 90 days."
+            "Shipment registration end (inclusive), e.g. 2026-06-13 or "
+            "2026-06-13T23:59:59+05:30. Supplying end_date together with start_date makes "
+            "awb/order_id optional. If omitted with start_date, defaults to the last 90 days."
         ),
     )
 
@@ -143,21 +145,20 @@ def _normalize_shipment_lookup_input(
 
     if awb_value and order_id_value:
         return {"error": "Provide exactly one of awb or order_id, not both"}
-    if not awb_value and not order_id_value:
-        if start or end:
-            return {
-                "error": (
-                    "awb or order_id is required. When retrying with start_date/end_date, "
-                    "include the same awb or order_id from the original lookup."
-                ),
-            }
-        return {"error": "Provide exactly one of awb or order_id"}
 
     if bool(start) != bool(end):
         return {
             "error": (
                 "Provide both start_date and end_date, or omit both for the default "
                 f"{_DEFAULT_LOOKUP_DAYS}-day window"
+            ),
+        }
+
+    if not awb_value and not order_id_value and not (start and end):
+        return {
+            "error": (
+                "Provide awb or order_id, or a start_date + end_date range to look up by "
+                "date alone."
             ),
         }
 
@@ -229,17 +230,27 @@ def _resolve_lookup_date_range(
     )
 
 
-def _extract_shipment_from_track_order_response(raw: Any) -> dict[str, Any] | None:
+def _extract_shipments_from_track_order_response(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, dict):
-        return None
+        return []
     results = raw.get("results")
     if not isinstance(results, dict):
-        return None
+        return []
     shipments = results.get("shipment_details")
-    if not isinstance(shipments, list) or not shipments:
-        return None
-    first = shipments[0]
-    return first if isinstance(first, dict) else None
+    if not isinstance(shipments, list):
+        return []
+    return [s for s in shipments if isinstance(s, dict)]
+
+
+def _shape_shipment(shipment: dict[str, Any], reference_number: str) -> dict[str, Any]:
+    return {
+        "awb": shipment.get("awb"),
+        "order_id": shipment.get("order_id"),
+        "reference_number": reference_number,
+        "cp_id": shipment.get("cp_id"),
+        "cp_name": shipment.get("cp_name"),
+        "created_at": shipment.get("created_at"),
+    }
 
 
 def _shipment_not_found_response(
@@ -250,7 +261,12 @@ def _shipment_not_found_response(
     start_date: date,
     end_date: date,
 ) -> dict[str, Any]:
-    identifier = f"awb={awb}" if awb else f"order_id={order_id}"
+    if awb:
+        identifier = f"awb={awb}"
+    elif order_id:
+        identifier = f"order_id={order_id}"
+    else:
+        identifier = "the given date range"
     if used_default_date_range:
         return {
             "needs_date_range": True,
@@ -309,8 +325,8 @@ async def _resolve_reference_number(
     except Exception as e:
         return {"error": str(e), "awb": awb, "order_id": order_id}
 
-    shipment = _extract_shipment_from_track_order_response(raw)
-    if shipment is None:
+    shipments = _extract_shipments_from_track_order_response(raw)
+    if not shipments:
         return _shipment_not_found_response(
             awb=awb,
             order_id=order_id,
@@ -319,30 +335,31 @@ async def _resolve_reference_number(
             end_date=end_day,
         )
 
-    reference_number = (shipment.get("reference_number") or "").strip()
-    if not reference_number:
+    shaped: list[dict[str, Any]] = []
+    for shipment in shipments:
+        reference_number = (shipment.get("reference_number") or "").strip()
+        if not reference_number:
+            continue
+        shaped.append(_shape_shipment(shipment, reference_number))
+
+    if not shaped:
         return {
-            "error": "Shipment found but reference_number is missing in track-order response.",
-            "shipment": shipment,
+            "error": "Shipment(s) found but reference_number is missing in track-order response.",
             "awb": awb,
             "order_id": order_id,
         }
 
+    date_range_used = {
+        "start_date": start_day.isoformat(),
+        "end_date": end_day.isoformat(),
+        "used_default": used_default,
+    }
+
     return {
-        "reference_number": reference_number,
-        "shipment": {
-            "awb": shipment.get("awb"),
-            "order_id": shipment.get("order_id"),
-            "reference_number": reference_number,
-            "cp_id": shipment.get("cp_id"),
-            "cp_name": shipment.get("cp_name"),
-            "created_at": shipment.get("created_at"),
-        },
-        "date_range_used": {
-            "start_date": start_day.isoformat(),
-            "end_date": end_day.isoformat(),
-            "used_default": used_default,
-        },
+        "count": len(shaped),
+        "shipments": shaped,
+        "reference_numbers": [s["reference_number"] for s in shaped],
+        "date_range_used": date_range_used,
     }
 
 
@@ -364,30 +381,37 @@ async def _load_rr_log_by_shipment(
     if resolved.get("needs_date_range") or resolved.get("error"):
         return resolved
 
-    reference_number = resolved["reference_number"]
-    try:
-        rr_log = await _load_rr_log(context, reference_number)
-    except Exception as e:
+    shipments = resolved.get("shipments") or []
+    date_range_used = resolved.get("date_range_used")
+
+    async def _one(shipment: dict[str, Any]) -> dict[str, Any]:
+        reference_number = shipment["reference_number"]
+        try:
+            rr_log = await _load_rr_log(context, reference_number)
+        except Exception as e:
+            return {
+                "reference_number": reference_number,
+                "shipment": shipment,
+                "error": f"Resolved reference_number but RR log fetch failed: {e}",
+            }
+        if rr_log.get("error"):
+            return {
+                "reference_number": reference_number,
+                "shipment": shipment,
+                **rr_log,
+            }
         return {
             "reference_number": reference_number,
-            "shipment": resolved.get("shipment"),
-            "date_range_used": resolved.get("date_range_used"),
-            "error": f"Resolved reference_number but RR log fetch failed: {e}",
+            "shipment": shipment,
+            "rr_log": rr_log,
         }
 
-    if rr_log.get("error"):
-        return {
-            "reference_number": reference_number,
-            "shipment": resolved.get("shipment"),
-            "date_range_used": resolved.get("date_range_used"),
-            **rr_log,
-        }
+    results = await asyncio.gather(*[_one(s) for s in shipments])
 
     return {
-        "reference_number": reference_number,
-        "shipment": resolved.get("shipment"),
-        "date_range_used": resolved.get("date_range_used"),
-        "rr_log": rr_log,
+        "count": len(results),
+        "date_range_used": date_range_used,
+        "results": list(results),
     }
 
 
@@ -626,10 +650,13 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
             name="fetch_rr_log_by_shipment",
             description=(
                 "PRIMARY — When the user gives an AWB or order_id (not reference_number): resolves "
-                f"reference_number via track-order, then fetches the RR log. If start_date/end_date "
-                f"are omitted, searches the last {_DEFAULT_LOOKUP_DAYS} days first. If nothing is "
-                "found, returns needs_date_range=true — ask the user for dates and retry with the "
-                "same awb or order_id plus start_date and end_date."
+                f"reference_number via track-order, then fetches the RR log. awb/order_id are not "
+                "mandatory when both start_date and end_date are supplied (date-range-only lookup). "
+                f"If start_date/end_date are omitted, searches the last {_DEFAULT_LOOKUP_DAYS} days "
+                "first. If nothing is found, returns needs_date_range=true — ask the user for dates "
+                "and retry with the same awb or order_id plus start_date and end_date. "
+                "Returns {count, date_range_used, results:[{reference_number, shipment, rr_log}]} — "
+                "one entry per matched shipment (date-range lookups can match many)."
             ),
             args_schema=FetchRRLogByShipmentInput,
         ),
@@ -638,8 +665,11 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
             name="resolve_reference_number",
             description=(
                 "SUB-TOOL — Resolve AWB or order_id to reference_number only (no RR log). "
-                f"Uses the last {_DEFAULT_LOOKUP_DAYS} days when dates are omitted; returns "
-                "needs_date_range=true if not found so you can ask the user for a wider window."
+                "awb/order_id are not mandatory when both start_date and end_date are supplied "
+                f"(date-range-only lookup). Uses the last {_DEFAULT_LOOKUP_DAYS} days when dates "
+                "are omitted; returns needs_date_range=true if not found so you can ask the user "
+                "for a wider window. Returns {count, shipments:[...], reference_numbers:[...], "
+                "date_range_used} — all matched shipments."
             ),
             args_schema=FetchRRLogByShipmentInput,
         ),

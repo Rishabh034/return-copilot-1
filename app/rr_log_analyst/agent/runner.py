@@ -37,6 +37,46 @@ from app.rr_log_analyst.tools import ToolContext, create_tools
 logger = logging.getLogger(__name__)
 
 
+_FRIENDLY_TOOL_LABELS: dict[str, str] = {
+    "fetch_rr_log": "Looking up the order",
+    "fetch_rr_log_by_shipment": "Finding the order",
+    "fetch_rr_logs_batch": "Looking up the orders",
+    "resolve_reference_number": "Finding the order",
+    "summarize_rr_log": "Reviewing the order",
+    "summarize_rr_logs_batch": "Reviewing the orders",
+    "get_rr_log_order": "Reading the order details",
+    "get_rr_log_pipeline": "Checking how the delivery company was picked",
+    "get_rr_log_ranking": "Checking the delivery company choices",
+    "search_rr_log_courier": "Tracing a delivery company",
+    "fetch_order_creation_log": "Checking the order creation history",
+    "fetch_audit_logs": "Checking recent changes",
+    "fetch_audit_logs_for_rule": "Checking changes to a setting",
+    "list_filter_rules": "Reading the delivery settings",
+    "list_ordered_list_rules": "Reading the priority settings",
+    "find_rule": "Finding a setting",
+    "get_filter_rule": "Opening a setting",
+    "get_ordered_list_rule": "Opening a setting",
+    "search_filter_rules": "Searching the settings",
+    "find_rules_for_pincode": "Finding settings for this area",
+    "find_rules_for_carrier": "Finding settings for this delivery company",
+    "summarize_filter_rules": "Reviewing the settings",
+    "get_enterprise_flow_config": "Checking the delivery setup",
+    "get_flow_config_flag": "Checking a setup option",
+    "get_load_distribution_config": "Checking how orders are split",
+    "run_recommendation": "Running a test",
+    "summarize_recommendation": "Reviewing the test",
+    "get_recommendation_pipeline": "Reviewing the test details",
+    "get_account_info": "Looking up delivery company accounts",
+    "summarize_accounts": "Reviewing the accounts",
+    "search_accounts": "Searching the accounts",
+    "resolve_enterprise": "Finding the account",
+}
+
+
+def _friendly_tool_label(tool_name: str) -> str:
+    return _FRIENDLY_TOOL_LABELS.get(tool_name, tool_name.replace("_", " ").capitalize())
+
+
 def _extract_text_delta(chunk_content: str | list) -> str | None:
     if isinstance(chunk_content, str):
         return chunk_content or None
@@ -53,77 +93,110 @@ def _extract_text_delta(chunk_content: str | list) -> str | None:
 
 def _summarize_result(tool_name: str, result: dict) -> str:
     if "error" in result:
-        return f"Error: {result['error']}"
-    if "count" in result:
-        return f"Returned {result['count']} results"
+        return f"Hit a problem: {result['error']}"
+
     if "total_ranked" in result and "filters_ran" in result:
         rule = result.get("matched_filter_rule")
-        rule_hint = f", filter={rule}" if rule else ""
-        return f"{result['total_ranked']} ranked couriers{rule_hint}"
+        top_pref = (result.get("preference_array") or [{}])[0] if result.get("preference_array") else {}
+        top_name = top_pref.get("cp_name") or top_pref.get("account_code") or ""
+        parts = [f"Looked up this order — {result['total_ranked']} courier partners were available"]
+        if top_name:
+            parts.append(f"{top_name} was chosen first")
+        if rule:
+            parts.append(f"because of the \"{rule}\" rule")
+        return ", ".join(parts)
+
     if "top_courier" in result:
         top = result.get("top_courier") or {}
-        name = top.get("cp_name") or top.get("account_code") or "unknown"
-        return f"Top: {name}, {result.get('total_ranked', 0)} ranked"
+        name = top.get("cp_name") or top.get("account_code") or "the top one"
+        return f"{name} was the first choice, out of {result.get('total_ranked', 0)} delivery companies"
+
     if "stage" in result and "value" in result:
-        return f"Pipeline stage {result['stage']}"
+        from app.rr_log_analyst.tools.allocation_views import _PIPELINE_STAGE_DESCRIPTIONS
+        desc = _PIPELINE_STAGE_DESCRIPTIONS.get(result["stage"], result["stage"])
+        return f"Checked one step of how the delivery company was picked: {desc}"
+
     if "ranking" in result and "total_ranked" in result:
-        return f"{result.get('total_matching', len(result['ranking']))} of {result['total_ranked']} ranked"
+        matching = result.get("total_matching", len(result["ranking"]))
+        return f"{matching} delivery company(s) matched, out of {result['total_ranked']} that were available"
+
     if "in_final_ranking" in result:
-        return f"Courier in final ranking: {result['in_final_ranking']}"
+        present = result["in_final_ranking"]
+        if present:
+            return "Yes — this delivery company was one of the final choices"
+        return "No — this delivery company was ruled out before the final choices"
+
     if "flow_summary" in result and "flags" in result:
-        return result["flow_summary"][:200]
+        return "Checked the settings that control how delivery companies are picked"
+
     if "flag" in result and "value" in result:
-        return f"{result['flag']}={result['value']}"
+        state = "on" if result["value"] in (True, "true", "True", 1) else "off"
+        return f"The \"{result['flag']}\" setting is turned {state}"
+
     if "logs_sample" in result:
-        return f"{result.get('count', 0)} audit logs ({result.get('sample_size', 0)} sampled)"
-    if "summaries" in result and "count" in result:
-        return f"{result['count']} order summaries"
+        count = result.get("count", 0)
+        if count:
+            return f"Found {count} recent change(s) made to the settings"
+        return "No setting changes found for this time period"
+
+    if "count" in result and "summaries" in result:
+        return f"Reviewed {result['count']} shipments"
+
+    if "count" in result and "logs" in result:
+        return f"Pulled up the history for {result['count']} shipments"
+
+    if "count" in result:
+        return f"Found {result['count']} results"
+
     if "total_rules" in result:
-        return f"Found {result['total_rules']} rules (compact summary)"
+        return f"Found {result['total_rules']} setting(s) that decide which delivery company to use"
+
     if "total_accounts" in result:
-        return f"Found {result['total_accounts']} accounts across {len(result.get('carrier_brands') or [])} carriers"
+        brands = result.get("carrier_brands") or []
+        return f"Found {result['total_accounts']} delivery company account(s) across {len(brands)} carriers"
+
     if "total_entries" in result and "enabled_entries" in result:
-        return f"{result['total_entries']} LD entries ({result['enabled_entries']} enabled)"
+        return (
+            f"Checked how orders are split between delivery companies — "
+            f"{result['enabled_entries']} of {result['total_entries']} splits are active"
+        )
+
     if "total_matching" in result:
         rules = result.get("rules") or []
         if rules:
-            names = ", ".join(r.get("name", "unknown") for r in rules[:3])
-            suffix = "..." if len(rules) > 3 else ""
-            return f"Found {result['total_matching']} matching rules: {names}{suffix}"
-        return f"Found {result['total_matching']} matching rules"
+            names = ", ".join(r.get("name", "unnamed") for r in rules[:3])
+            suffix = ", and more" if len(rules) > 3 else ""
+            return f"Found {result['total_matching']} matching setting(s): {names}{suffix}"
+        return f"Found {result['total_matching']} matching setting(s)"
+
     if "rule" in result:
         rule = result["rule"]
-        return f"Found rule: {rule.get('name', 'unknown')}"
+        return f"Opened the \"{rule.get('name', 'unnamed')}\" setting"
+
     if "flow_summary" in result:
-        return result["flow_summary"][:200]
+        return "Checked the settings that control how delivery companies are picked"
+
     if "results" in result and "count" in result:
         first = result["results"][0] if result["results"] else {}
         ranked = first.get("total_ranked", 0)
-        return f"{result['count']} order(s), top result has {ranked} ranked couriers"
+        return f"Ran a test for {result['count']} order(s) — {ranked} delivery companies came up"
+
+    if "entry_count" in result and "entries" in result:
+        n = result["entry_count"]
+        return f"Found {n} time(s) this shipment was sent to a delivery company"
+
     if "resolved" in result:
         resolved = result["resolved"]
-        return (
-            f"Resolved enterprise: {resolved.get('name')} "
-            f"(id={resolved.get('enterprise_user_profile_id')})"
-        )
+        return f"This is for the \"{resolved.get('name', 'unknown')}\" account"
+
     if "matches" in result:
         count = result.get("match_count", len(result["matches"]))
-        return f"{count} enterprise match(es) — ask user to pick or refine name"
-    return "Completed"
+        if count == 1:
+            name = result["matches"][0].get("name", "unknown") if result["matches"] else "unknown"
+            return f"Found the account: {name}"
+        return f"Found {count} possible accounts — please pick the right one"
 
-
-def _summarize_scratchpad_envelope(tool_name: str, envelope: dict[str, Any]) -> str:
-    text = envelope.get("scratchpad") or ""
-    if not text and envelope.get("scratchpad_stored"):
-        total = envelope.get("scratchpad_total_chars", 0)
-        batches = envelope.get("scratchpad_batches", 0)
-        return f"{tool_name}: full scratchpad stored ({total} chars, {batches} batches)"
-    preview = text[:200].replace("\n", " ")
-    if len(text) > 200:
-        preview += "..."
-    if preview:
-        return f"{tool_name}: {preview}"
-    return _summarize_result(tool_name, envelope)
+    return "Done"
 
 
 def _build_tool_message_content(
@@ -302,7 +375,14 @@ class AgentRunner:
                 tool_args = tool_call.get("args") or {}
                 tool_id = tool_call["id"]
 
-                yield ("tool_start", {"tool": tool_name, "args": tool_args})
+                yield (
+                    "tool_start",
+                    {
+                        "tool": tool_name,
+                        "label": _friendly_tool_label(tool_name),
+                        "args": tool_args,
+                    },
+                )
 
                 tool = tools_by_name.get(tool_name)
                 if tool is None:
@@ -403,14 +483,14 @@ class AgentRunner:
                     )
                 )
 
-                if use_scratchpad:
-                    try:
-                        envelope = json.loads(tool_message_content)
-                        summary = _summarize_scratchpad_envelope(tool_name, envelope)
-                    except json.JSONDecodeError:
-                        summary = _summarize_result(tool_name, result)
-                else:
-                    summary = _summarize_result(tool_name, result)
-                yield ("tool_result", {"tool": tool_name, "summary": summary})
+                summary = _summarize_result(tool_name, result)
+                yield (
+                    "tool_result",
+                    {
+                        "tool": tool_name,
+                        "label": _friendly_tool_label(tool_name),
+                        "summary": summary,
+                    },
+                )
 
         yield ("error", {"code": "max_iterations", "message": "Maximum iterations reached"})

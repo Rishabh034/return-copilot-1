@@ -184,7 +184,7 @@ class ClickpostClient:
         shipment_registration_start_date_ist: str,
         shipment_registration_end_date_ist: str,
         page_number: int = 1,
-        page_size: int = 10,
+        page_size: int = 100,
     ) -> dict:
         """Resolve AWB or order_id to shipment metadata (including reference_number).
 

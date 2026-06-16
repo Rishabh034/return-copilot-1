@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 #   - dashboard/views/... (EnterpriseRecommendationFlowConfig — selector-recs-flow-config)
 #   - dashboard/views/dashboard_selector_view.py (EnterpriseLoadDistribution*ConfigAPI)
 #   - signup/views/account_details.py (CourierPartnerAccountDetailView)
-_RR_LOG_PATH = "/api/v1/clickpost/request_logs"
+_RR_LOG_PATH = "/api/v2/clickpost/request_logs_v2"
 _TRACK_ORDER_SHIPMENT_DETAILS_PATH = "/api/v1/dashboard/track-order-shipment-details/"
 
 _RULES_CONFIG_PATH = "/api/v1/selector-filters-config"
@@ -34,6 +34,7 @@ _LOAD_DISTRIBUTION_FILTER_CONFIG_PATH = "/api/v1/dashboard/selector-load-distrib
 # service_id for the Recommendation service (signup.object.enterprise_service
 # EnterpriseServiceConstant.RECOMMENDATION). request_logs is keyed by service.
 _RECOMMENDATION_SERVICE_ID = 3
+_ORDER_CREATION_SERVICE_ID = 1
 
 
 class ClickpostPermissionError(Exception):
@@ -81,7 +82,7 @@ class ClickpostClient:
         url = f"{self._base_url}{path}"
         # Drop None-valued params so we don't send empty query keys.
         clean = {k: v for k, v in params.items() if v is not None}
-        # logger.debug("Clickpost GET %s params=%s", url, clean)
+        logger.debug("Clickpost GET %s params=%s", url, clean)
         # The token authenticates + scopes the request; forward it as-is.
         resp = await self._client.get(
             url,
@@ -220,6 +221,22 @@ class ClickpostClient:
             token,
             {
                 "service_id": _RECOMMENDATION_SERVICE_ID,
+                "reference_number": reference_number,
+            },
+        )
+
+    async def get_order_creation_log(self, token: str, reference_number: str) -> dict:
+        """Fetch the recommendation/allocation log for a single shipment.
+
+        Reuses the request_logs endpoint for the Recommendation service; it
+        returns the stored request/response envelope. Note: this endpoint only
+        retains roughly the last 7 days of logs.
+        """
+        return await self._get(
+            _RR_LOG_PATH,
+            token,
+            {
+                "service_id": _ORDER_CREATION_SERVICE_ID,
                 "reference_number": reference_number,
             },
         )

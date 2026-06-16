@@ -65,6 +65,17 @@ Fetches the full catalog internally via active-reports-metadata but **only retur
 | Simulate allocation | `run_recommendation` | `summarize_recommendation`, `get_recommendation_pipeline` |
 | Account lookup | `get_account_info` | `summarize_accounts`, `search_accounts` |
 
+### Order creation logs
+
+| Question | PRIMARY |
+|----------|---------|
+| What was sent to the courier partner? | `fetch_order_creation_log` |
+| Why did order creation fail? | `fetch_order_creation_log` — check CP response |
+| Was order placed with CP? | `fetch_order_creation_log` — check timestamps |
+| Full debug (allocation + creation) | `fetch_rr_log` + `fetch_order_creation_log` |
+
+Requires `reference_number`. If user gives AWB/order_id, resolve first with `fetch_rr_log_by_shipment` or `resolve_reference_number`.
+
 ### Audit logs
 
 | Question | PRIMARY | SUB-TOOLs if needed |

@@ -357,7 +357,7 @@ async def _fetch_audit_logs_for_rule(
         }
 
     target_date = parsed.date().isoformat()
-    audit = await _fetch_audit_logs(context, target_date, target_date, action_taken)
+    audit = await _fetch_audit_logs_raw(context, target_date, target_date, action_taken)
     if "error" in audit:
         return {**audit, "rule": rule, "rule_last_updated_at": parsed.isoformat()}
 
@@ -379,7 +379,7 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
         end_date: str,
         action_taken: ActionTaken,
     ) -> dict[str, Any]:
-        return await _fetch_audit_logs(context, start_date, end_date, action_taken)
+        return await _fetch_audit_logs_raw(context, start_date, end_date, action_taken)
 
     async def fetch_audit_logs_for_rule(
         rule_id: str,

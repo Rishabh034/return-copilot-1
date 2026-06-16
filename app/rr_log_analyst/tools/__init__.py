@@ -7,11 +7,11 @@ from app.rr_log_analyst.tools import (
     audit_logs,
     flow_config,
     load_distribution,
+    order_creation_logs,
     recommendation,
     result_query,
     rr_logs,
     rules,
-    
 )
 from app.rr_log_analyst.tools.context import ToolContext
 
@@ -20,6 +20,7 @@ _TOOL_MODULES = (
     audit_logs,
     flow_config,
     load_distribution,
+    order_creation_logs,
     recommendation,
     result_query,
     rr_logs,

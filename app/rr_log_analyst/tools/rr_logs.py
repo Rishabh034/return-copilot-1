@@ -391,20 +391,18 @@ async def _load_rr_log_by_shipment(
     }
 
 
-def _extract_allocation_from_envelope(raw: dict) -> tuple[dict[str, Any] | None, dict | None]:
-    result = raw.get("result")
-    if not isinstance(result, dict):
-        return None, None
+def _extract_single_allocation(entry: dict) -> tuple[dict[str, Any] | None, dict | None, dict | None]:
+    """Extract order, allocation body, and timestamps from one result entry."""
+    order = shape_user_request(entry.get("user_request"))
+    timestamps = entry.get("order_timestamp") if isinstance(entry.get("order_timestamp"), dict) else None
 
-    order = shape_user_request(result.get("user_request"))
-
-    clickpost_response = result.get("clickpost_response")
+    clickpost_response = entry.get("clickpost_response")
     if isinstance(clickpost_response, dict):
         inner = clickpost_response.get("result")
         if isinstance(inner, list) and inner and isinstance(inner[0], dict):
-            return order, inner[0]
+            return order, inner[0], timestamps
 
-    return order, None
+    return order, None, timestamps
 
 
 def _extract_allocation_fallback(raw: dict) -> dict | None:
@@ -423,13 +421,31 @@ def _shape_rr_log(reference_number: str, raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {"reference_number": reference_number, "error": "Unexpected response shape"}
 
-    order, body = _extract_allocation_from_envelope(raw)
-    if body is None:
-        body = _extract_allocation_fallback(raw)
-    if body is None:
+    result = raw.get("result")
+    if not isinstance(result, list) or not result:
         return {"reference_number": reference_number, "error": "No allocation data in response"}
 
-    return shape_allocation_result(body, order=order, reference_number=reference_number)
+    attempts: list[dict[str, Any]] = []
+    for entry in result:
+        if not isinstance(entry, dict):
+            continue
+        order, body, timestamps = _extract_single_allocation(entry)
+        if body is None:
+            continue
+        shaped = shape_allocation_result(body, order=order, reference_number=reference_number)
+        if timestamps:
+            shaped["timestamps"] = timestamps
+        attempts.append(shaped)
+
+    if not attempts:
+        return {"reference_number": reference_number, "error": "No allocation data in response"}
+
+    latest = attempts[-1]
+    return {
+        **latest,
+        "attempt_count": len(attempts),
+        "attempts": attempts,
+    }
 
 
 async def _load_rr_log(context: ToolContext, reference_number: str) -> dict[str, Any]:

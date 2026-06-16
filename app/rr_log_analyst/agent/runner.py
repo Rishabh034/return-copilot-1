@@ -47,8 +47,30 @@ def _summarize_result(tool_name: str, result: dict) -> str:
         rule = result.get("matched_filter_rule")
         rule_hint = f", filter={rule}" if rule else ""
         return f"{result['total_ranked']} ranked couriers{rule_hint}"
+    if "top_courier" in result:
+        top = result.get("top_courier") or {}
+        name = top.get("cp_name") or top.get("account_code") or "unknown"
+        return f"Top: {name}, {result.get('total_ranked', 0)} ranked"
+    if "stage" in result and "value" in result:
+        return f"Pipeline stage {result['stage']}"
+    if "ranking" in result and "total_ranked" in result:
+        return f"{result.get('total_matching', len(result['ranking']))} of {result['total_ranked']} ranked"
+    if "in_final_ranking" in result:
+        return f"Courier in final ranking: {result['in_final_ranking']}"
+    if "flow_summary" in result and "flags" in result:
+        return result["flow_summary"][:200]
+    if "flag" in result and "value" in result:
+        return f"{result['flag']}={result['value']}"
+    if "logs_sample" in result:
+        return f"{result.get('count', 0)} audit logs ({result.get('sample_size', 0)} sampled)"
+    if "summaries" in result and "count" in result:
+        return f"{result['count']} order summaries"
     if "total_rules" in result:
-        return f"Found {result['total_rules']} rules"
+        return f"Found {result['total_rules']} rules (compact summary)"
+    if "total_accounts" in result:
+        return f"Found {result['total_accounts']} accounts across {len(result.get('carrier_brands') or [])} carriers"
+    if "total_entries" in result and "enabled_entries" in result:
+        return f"{result['total_entries']} LD entries ({result['enabled_entries']} enabled)"
     if "total_matching" in result:
         rules = result.get("rules") or []
         if rules:

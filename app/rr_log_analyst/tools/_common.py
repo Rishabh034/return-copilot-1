@@ -35,7 +35,24 @@ def shape_rule(rule: dict) -> dict:
     }
 
 
-_FILTERS_RAN_KEYS = (
+def compact_rule_summary(rule: dict) -> dict[str, Any]:
+    """Lightweight rule index entry — no conditions or full account_list."""
+    conditions = rule.get("rule") or []
+    condition_keys = list(
+        dict.fromkeys(c.get("key") for c in conditions if isinstance(c, dict) and c.get("key"))
+    )
+    return {
+        "id": rule.get("id"),
+        "name": rule.get("name"),
+        "rule_type": rule.get("rule_type"),
+        "priority": rule.get("priority"),
+        "enabled": rule.get("enabled"),
+        "account_count": len(rule.get("account_list") or []),
+        "condition_keys": condition_keys,
+    }
+
+
+FILTERS_RAN_KEYS = (
     "1_active_accounts_filter",
     "1_blacklisted_accounts",
     "2_serviceable_accounts_filter",
@@ -45,6 +62,7 @@ _FILTERS_RAN_KEYS = (
     "3_clickpost_define_and_custom_filters_accounts_applied",
     "3_clickpost_define_and_custom_filters_accounts",
     "accounts_after_load_distribution_filter",
+    "accounts_after_load_distribution",
     "priority_list_account_names",
     "4_ordered_list_account_names_filters_applied",
     "ordered_list_filter_accounts",
@@ -102,7 +120,7 @@ def shape_preference_entry(entry: dict) -> dict[str, Any]:
 def shape_filters_ran(filters_ran: Any) -> dict[str, Any]:
     if not isinstance(filters_ran, dict):
         return {}
-    return {key: filters_ran[key] for key in _FILTERS_RAN_KEYS if key in filters_ran}
+    return {key: filters_ran[key] for key in FILTERS_RAN_KEYS if key in filters_ran}
 
 
 def shape_allocation_result(

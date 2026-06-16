@@ -1,52 +1,60 @@
 # Rule Iteration
 
 ## What is Rule Iteration?
-Rule Iteration is a feature that allows the system to continue evaluating subsequent FL/OL rules when a matched rule yields an empty preference array (zero valid carrier partners after all checks).
+Rule Iteration is a feature that allows the system to continue evaluating subsequent Filter/OL rules when a matched rule has **no serviceable accounts** in its `account_list` (all of them were dropped by pre-filter checks).
 
-Without this feature, the system halts on the first matched rule even if that rule produces no usable carriers. With rule iteration enabled, the system moves to the next rule in priority order and tries again.
+Without this feature, the system stops on the first matched rule even if that rule produces no usable carriers. With rule iteration enabled, the system moves to the next rule in priority order and tries again.
 
 ## Problem It Solves
 Previously:
 1. Rule at Priority 1 matches conditions
-2. All carriers in that rule's output are dropped (non-serviceable, ODA, blacklisted, inactive)
-3. System stops → order gets no carrier assigned
+2. All carriers in that rule's `account_list` were dropped upstream (non-serviceable, ODA, blacklisted, inactive, out of threshold)
+3. System stops → order gets no carrier from rules
 
 With Rule Iteration:
 1. Rule at Priority 1 matches conditions
-2. All carriers dropped → empty preference array
+2. No serviceable account in its list → rule skipped
 3. System moves to Priority 2 rule, evaluates conditions
-4. If Priority 2 also yields empty → move to Priority 3
-5. Continue until a rule produces valid carriers OR all rules are exhausted
+4. If Priority 2 also yields nothing serviceable → move to Priority 3
+5. Continue until a rule produces serviceable carriers OR all rules are exhausted
 
-## Trigger Conditions for Moving to Next Rule
-A rule is skipped (iteration moves forward) when the preference array is empty due to any of:
-- **Non-serviceability** — carrier does not serve the drop pincode
-- **Blacklisted pincodes** — pincode is blocked for the carrier
-- **ODA (Out of Delivery Area)** — pincode marked as ODA for the carrier
-- **Inactive accounts** — carrier account is disabled
+## Trigger Condition for Moving to Next Rule
+A matched rule is skipped when **none of its `account_list` is in the serviceable set** (`has_serviceable_accounts: false`). The serviceable set already excludes accounts dropped for:
+- **Non-serviceability** — carrier does not serve the route/order type
+- **Blacklisted pincodes** — pincode is blocked for the account
+- **ODA** — drop pincode marked ODA for the carrier
+- **Inactive accounts** — account is disabled
+- **Out-of-threshold** — order outside the account's threshold/cutoff window
 
-## Scope
-Rule iteration applies to both **Filter Rules (FL)** and **Ordered List Rules (OL)**.
+(With load distribution filters, iteration can also move forward when the LD allocation for the matched rule comes up empty.)
 
-## Configuration
-- Feature is **togglable** — Clickpost/administrators can enable or disable it per enterprise
-- Not on by default — requires explicit enablement
+## Scope & Configuration
+Two **independent** boolean flags on `EnterpriseRecommendationFlowConfig`, both **default false** (must be explicitly enabled per enterprise, optionally per merchant):
+- `iterate_through_rules_filters` — iteration for Filter rules
+- `iterate_through_rules_ordered_list` — iteration for Ordered List rules
 
-## Visibility
-- When rule iteration occurs, it is **surfaced in the recommendation response** so the caller can see which rules were evaluated
-- Detailed logs are captured: which rule was evaluated, why it resulted in empty preference array
+An enterprise can have one enabled and not the other.
+
+## Visibility in the RR Log
+Every matched rule (including skipped ones) is recorded with its evaluation order:
+- Filters: `filters_ran.3_clickpost_filters_rules_list` — list of `{sequence, rule_name, rule_priority, has_serviceable_accounts, allocation_type}`
+- OLs: `filters_ran.4_ordered_list_rules_list` — list of `{sequence, rule_name, rule_priority, has_serviceable_accounts}`
+
+A rule with `has_serviceable_accounts: false` followed by another entry with a higher `sequence` = rule iteration happened.
 
 ## Behaviour Summary
 
 | Scenario | Without Rule Iteration | With Rule Iteration |
 |----------|----------------------|---------------------|
-| Rule 1 matches, 0 carriers after checks | Stop, no allocation | Move to Rule 2 |
-| Rule 2 matches, 0 carriers after checks | N/A | Move to Rule 3 |
-| Rule N matches, valid carriers found | N/A | Allocate from Rule N |
-| All rules exhausted, 0 carriers | No allocation | TBD — details pending (depends on Return Serviceable Accounts True/False behaviour) |
+| Rule 1 matches, 0 serviceable accounts | Stop — empty pool | Move to Rule 2 |
+| Rule 2 matches, 0 serviceable accounts | N/A | Move to Rule 3 |
+| Rule N matches, serviceable carriers found | N/A | Allocate from Rule N |
+| All rules exhausted, 0 serviceable carriers | Empty pool | Empty pool |
+
+When the pool ends up empty: if `return_serviceable_accounts` is true (default), the PBA stage still runs but over an empty pool → empty preference array; the RR log trace shows which rules were tried and why.
 
 ## Key Notes
 1. Rule iteration does **not** change condition matching logic — a rule still needs its conditions to pass before it can yield carriers
-2. Iteration only triggers on **empty preference array after pre-filter checks**, not on condition mismatch
+2. Iteration only triggers when a **matched** rule has no serviceable accounts — not on condition mismatch (non-matching rules are skipped anyway)
 3. The priority order is still respected — system always tries lower priority number first
-4. Feature must be **explicitly enabled** per enterprise — not on by default
+4. Two separate flags — filters and OL iteration are enabled independently, both off by default

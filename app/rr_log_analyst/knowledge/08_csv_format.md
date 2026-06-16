@@ -63,7 +63,7 @@ Each condition object fields:
 
 | Field | Description |
 |-------|-------------|
-| `op` | Operator: `EQ`, `NEG`, `IN`, `CONTAINS`, `GTE`, `GT`, `LTE`, `LT` |
+| `op` | Operator: `EQ`, `NEG`, `IN`, `CONTAINS`, `GTE`, `GT`, `LTE`, `LT`, `BETWEEN` |
 | `key` | Field name: `weight`, `drop_pincode`, `pickup_pincode`, `order_type`, `delivery_type`, etc. |
 | `value` | Value to compare against |
 | `rule_type` | `CLICKPOST_DEFINED` or `ENTERPRISE_CUSTOM` |

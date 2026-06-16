@@ -7,20 +7,13 @@ from app.config import settings
 
 def resolve_token(
     authorization: str | None = None,
-    token: str | None = None,
 ) -> str:
     """Resolve Clickpost token from header, explicit value, or dev fallback."""
     if authorization:
         parts = authorization.split(maxsplit=1)
         if len(parts) == 2 and parts[0].lower() == "token" and parts[1].strip():
             return parts[1].strip()
-
-    if token and token.strip():
-        return token.strip()
-
-    if settings.rr_analyst_dev_token:
-        return settings.rr_analyst_dev_token
-
+            
     raise HTTPException(
         status_code=401,
         detail="Missing token. Provide Authorization: Token <token> or a token in the request body.",

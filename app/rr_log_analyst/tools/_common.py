@@ -24,32 +24,17 @@ def as_list(raw: Any) -> list:
 
 def shape_rule(rule: dict) -> dict:
     """Pick the fields of a filter / ordered-list rule the analyst cares about."""
-    return {
+    shaped = {
         "id": rule.get("id"),
         "name": rule.get("name"),
         "rule_type": rule.get("rule_type"),
         "priority": rule.get("priority"),
         "enabled": rule.get("enabled"),
+        "updated_at": rule.get("updated_at"),
         "account_list": rule.get("account_list") or [],
         "rule": rule.get("rule") or [],
     }
-
-
-def compact_rule_summary(rule: dict) -> dict[str, Any]:
-    """Lightweight rule index entry — no conditions or full account_list."""
-    conditions = rule.get("rule") or []
-    condition_keys = list(
-        dict.fromkeys(c.get("key") for c in conditions if isinstance(c, dict) and c.get("key"))
-    )
-    return {
-        "id": rule.get("id"),
-        "name": rule.get("name"),
-        "rule_type": rule.get("rule_type"),
-        "priority": rule.get("priority"),
-        "enabled": rule.get("enabled"),
-        "account_count": len(rule.get("account_list") or []),
-        "condition_keys": condition_keys,
-    }
+    return {k: v for k, v in shaped.items() if v is not None and v != ""}
 
 
 FILTERS_RAN_KEYS = (
@@ -63,10 +48,52 @@ FILTERS_RAN_KEYS = (
     "3_clickpost_define_and_custom_filters_accounts",
     "accounts_after_load_distribution_filter",
     "accounts_after_load_distribution",
+    "accounts_after_load_distribution",
     "priority_list_account_names",
+    "4_ordered_list_rules_list",
+    "order_list_matched_rule",
     "4_ordered_list_account_names_filters_applied",
     "ordered_list_filter_accounts",
     "5_accounts_after_intelligent_performance_allocation",
+)
+
+
+_USER_REQUEST_FIELDS = (
+    "reference_number",
+    "item",
+    "order_type",
+    "delivery_type",
+    "invoice_value",
+    "pickup_pincode",
+    "drop_pincode",
+    "weight",
+    "volumetric_weight",
+    "higher_of_dry_weight_and_volumetric_weight",
+    "pickup_city",
+    "drop_city",
+    "pickup_postal_code",
+    "drop_postal_code",
+    "pickup_country_code",
+    "drop_country_code",
+    "length",
+    "height",
+    "breadth",
+    "pickup_city_postal_code",
+    "drop_city_postal_code",
+    "is_restricted",
+    "fareye_store_id",
+    "enterprise_store_id",
+    "pickup_address",
+    "drop_address",
+    "zone",
+    "pickup_name",
+    "item_count",
+    "pickup_location_code",
+    "drop_location_code",
+    "pickup_state",
+    "drop_state",
+    "box_code",
+    "shipment_created_datetime_utc",
 )
 
 
@@ -78,25 +105,14 @@ def shape_user_request(user_requests: Any) -> dict[str, Any] | None:
         return None
 
     shaped: dict[str, Any] = {
-        "reference_number": req.get("reference_number"),
-        "pickup_pincode": req.get("pickup_pincode"),
-        "drop_pincode": req.get("drop_pincode"),
-        "delivery_type": req.get("delivery_type"),
-        "order_type": req.get("order_type"),
-        "item": req.get("item"),
-        "invoice_value": req.get("invoice_value"),
-        "pickup_city": req.get("pickup_city"),
-        "pickup_state": req.get("pickup_state"),
-        "drop_city": req.get("drop_city"),
-        "drop_state": req.get("drop_state"),
-        "shipment_created_datetime_utc": req.get("shipment_created_datetime_utc"),
+        field: req.get(field) for field in _USER_REQUEST_FIELDS if req.get(field) is not None
     }
     additional = req.get("additional")
     if isinstance(additional, dict):
         custom_fields = additional.get("custom_fields")
         if custom_fields:
             shaped["custom_fields"] = custom_fields
-    return {k: v for k, v in shaped.items() if v is not None}
+    return shaped or None
 
 
 def shape_preference_entry(entry: dict) -> dict[str, Any]:
@@ -120,6 +136,7 @@ def shape_preference_entry(entry: dict) -> dict[str, Any]:
 def shape_filters_ran(filters_ran: Any) -> dict[str, Any]:
     if not isinstance(filters_ran, dict):
         return {}
+    return {key: filters_ran[key] for key in FILTERS_RAN_KEYS if key in filters_ran}
     return {key: filters_ran[key] for key in FILTERS_RAN_KEYS if key in filters_ran}
 
 
@@ -151,4 +168,7 @@ def shape_allocation_result(
     ordered_list_applied = filters_ran.get("4_ordered_list_account_names_filters_applied")
     if ordered_list_applied is not None:
         shaped["ordered_list_applied"] = ordered_list_applied
+    matched_ol = filters_ran.get("order_list_matched_rule")
+    if matched_ol:
+        shaped["matched_ordered_list_rule"] = matched_ol
     return {k: v for k, v in shaped.items() if v is not None}

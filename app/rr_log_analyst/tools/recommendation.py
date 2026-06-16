@@ -26,6 +26,8 @@ PipelineStage = Literal[
     "accounts_after_load_distribution_filter",
     "accounts_after_load_distribution",
     "priority_list_account_names",
+    "4_ordered_list_rules_list",
+    "order_list_matched_rule",
     "4_ordered_list_account_names_filters_applied",
     "ordered_list_filter_accounts",
     "5_accounts_after_intelligent_performance_allocation",
@@ -38,18 +40,39 @@ class OrderInput(BaseModel):
     delivery_type: Literal["FORWARD", "RVP"]
     order_type: str | None = Field(default=None, description="e.g. PREPAID, COD")
     reference_number: str | None = None
+    zone: str | None = None
     item: str | None = None
     invoice_value: float | None = None
-    weight: float | None = Field(default=None, description="Weight in grams.")
+    weight: float | None = Field(default=None, description="Dry weight in grams.")
+    volumetric_weight: float | None = None
+    higher_of_dry_weight_and_volumetric_weight: float | None = None
     length: float | None = None
     height: float | None = None
     breadth: float | None = None
     item_count: int | None = None
+    pickup_city: str | None = None
+    drop_city: str | None = None
+    pickup_postal_code: str | None = None
+    drop_postal_code: str | None = None
+    pickup_country_code: str | None = None
+    drop_country_code: str | None = None
+    pickup_city_postal_code: str | None = None
+    drop_city_postal_code: str | None = None
+    pickup_state: str | None = None
+    drop_state: str | None = None
+    pickup_address: str | None = None
+    drop_address: str | None = None
+    pickup_name: str | None = None
+    pickup_location_code: str | None = None
+    drop_location_code: str | None = None
+    is_restricted: str | None = None
+    fareye_store_id: str | None = None
+    enterprise_store_id: str | None = None
+    box_code: str | None = None
     additional: dict[str, Any] | None = Field(
         default=None,
         description="Extra fields such as custom_fields.",
     )
-    higher_of_dry_weight_and_volumetric_weight: float | None = None
     shipment_created_datetime_utc: str | None = Field(
         default=None,
         description="UTC datetime string, e.g. 2026-06-05 07:19:15",

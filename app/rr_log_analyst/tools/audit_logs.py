@@ -2,19 +2,20 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Literal
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from app.rr_log_analyst.tools.context import ToolContext
+from app.rr_log_analyst.tools.rules import _fetch_all_raw_rules, _resolve_rules_by_query
+
 logger = logging.getLogger(__name__)
 
 _MAX_RANGE_DAYS = 7
 _DEFAULT_PAGE_SIZE = 100
-_MAX_SUMMARY_LOGS = 10
-_DATE_FORMATS = ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S")
+_DATE_FORMATS = ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ")
 
 ALLOWED_ACTION_TAKEN = (
     "Track",
@@ -61,25 +62,29 @@ ActionTaken = Literal[
 ]
 
 
-class AuditLogRangeInput(BaseModel):
-    start_date: str = Field(description="Start date (inclusive), e.g. 2026-06-01.")
+class FetchAuditLogsInput(BaseModel):
+    start_date: str = Field(description="Start date (inclusive), YYYY-MM-DD.")
     end_date: str = Field(
-        description="End date (inclusive), e.g. 2026-06-07. Must be within 7 days of start_date."
+        description=(
+            "End date (inclusive), YYYY-MM-DD. This tool allows at most 7 days "
+            "between start_date and end_date."
+        )
     )
     action_taken: ActionTaken = Field(
         description=(
-            "Dashboard module category. Use 'Allocation' for filter/OL rule changes; "
-            "'Carrier' for courier account changes."
+            "Filters logs by section_name (exact match). For allocation rule "
+            "investigations, use 'Allocation'."
         )
     )
 
 
-class SearchAuditLogsInput(AuditLogRangeInput):
-    query: str = Field(
-        description=(
-            "Required search text — matched against username, action, description, rule names, "
-            "or any string field in the log entry (case-insensitive substring)."
-        ),
+class FetchAuditLogsForRuleInput(BaseModel):
+    rule_id: str = Field(
+        description="Rule id, exact rule name, or text containing a rule name."
+    )
+    action_taken: ActionTaken = Field(
+        default="Allocation",
+        description="section_name filter passed to fetch_audit_logs.",
     )
 
 
@@ -91,6 +96,30 @@ def _parse_date(value: str) -> date:
         except ValueError:
             continue
     raise ValueError(f"Invalid date '{value}'. Use YYYY-MM-DD.")
+
+
+def _normalize_datetime(value: datetime) -> datetime:
+    """Normalize to UTC-aware so naive and Z-suffixed timestamps can be compared."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _parse_datetime(value: str) -> datetime | None:
+    value = value.strip()
+    if not value:
+        return None
+    normalized = value.replace("Z", "+00:00") if value.endswith("Z") else value
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        pass
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    return None
 
 
 def _validate_date_range(start_date: str, end_date: str) -> tuple[date, date] | dict[str, str]:
@@ -107,15 +136,58 @@ def _validate_date_range(start_date: str, end_date: str) -> tuple[date, date] | 
     if span_days > _MAX_RANGE_DAYS:
         return {
             "error": (
-                f"Date range is {span_days} days. Audit logs may only be fetched for up to "
-                f"{_MAX_RANGE_DAYS} days per request (to avoid overloading the system). "
-                "Use a shorter window or make separate calls for non-overlapping 7-day chunks."
+                f"Date range is {span_days} days. This tool allows at most "
+                f"{_MAX_RANGE_DAYS} days per call. Use shorter windows or separate "
+                "non-overlapping calls."
             )
         }
     return start, end
 
 
-def _extract_logs(raw: Any) -> list[dict]:
+def _shape_log_entry(log: dict[str, Any]) -> dict[str, Any]:
+    payload = log.get("payload") if isinstance(log.get("payload"), dict) else {}
+    shaped: dict[str, Any] = {
+        "updated_at": log.get("updated_at"),
+        "username": log.get("username"),
+        "section_name": log.get("section_name"),
+        "service_name": log.get("service_name"),
+        "ip_address": log.get("ip_address"),
+    }
+    if payload:
+        shaped["payload"] = payload
+        payload_updated_at = payload.get("updated_at")
+        if payload_updated_at:
+            shaped["payload_updated_at"] = payload_updated_at
+    return {k: v for k, v in shaped.items() if v is not None}
+
+
+def _updated_at_bounds(logs: list[dict[str, Any]]) -> dict[str, str | None]:
+    timestamps: list[datetime] = []
+    for log in logs:
+        for key in ("updated_at", "payload_updated_at"):
+            parsed = _parse_datetime(str(log.get(key) or ""))
+            if parsed is not None:
+                timestamps.append(_normalize_datetime(parsed))
+    if not timestamps:
+        return {"latest_updated_at": None, "earliest_updated_at": None}
+    timestamps.sort()
+    return {
+        "earliest_updated_at": timestamps[0].isoformat(),
+        "latest_updated_at": timestamps[-1].isoformat(),
+    }
+
+
+def _sort_logs_by_updated_at(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def sort_key(log: dict[str, Any]) -> datetime:
+        parsed = _parse_datetime(str(log.get("updated_at") or ""))
+        if parsed is None:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        return _normalize_datetime(parsed)
+
+    return sorted(logs, key=sort_key, reverse=True)
+
+
+def _shape_audit_logs(raw: Any, start_date: str, end_date: str, action_taken: str) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return []
 
@@ -129,49 +201,89 @@ def _extract_logs(raw: Any) -> list[dict]:
             logs = nested if isinstance(nested, list) else []
         else:
             logs = []
-    return [entry for entry in logs if isinstance(entry, dict)]
+
+    shaped_logs = [_shape_log_entry(log) for log in logs if isinstance(log, dict)]
+    shaped_logs = _sort_logs_by_updated_at(shaped_logs)
+    bounds = _updated_at_bounds(shaped_logs)
+
+    return {
+        "start_date": start_date,
+        "end_date": end_date,
+        "action_taken": action_taken,
+        "count": raw.get("totalCount", len(shaped_logs)),
+        "page_size": raw.get("pageSize"),
+        **bounds,
+        "logs": shaped_logs,
+    }
 
 
-def _compact_audit_entry(entry: dict) -> dict[str, Any]:
-    preferred = (
-        "id",
-        "userName",
-        "username",
-        "user",
-        "action",
-        "actionTaken",
-        "module",
-        "description",
-        "details",
-        "createdAt",
-        "created_at",
-        "timestamp",
-        "date",
-        "ipAddress",
-        "entity",
-        "entityName",
-    )
-    compact = {key: entry.get(key) for key in preferred if entry.get(key) is not None}
-    if compact:
-        return compact
-
-    trimmed: dict[str, Any] = {}
-    for key, value in entry.items():
-        if isinstance(value, (str, int, float, bool)) and value != "":
-            text = str(value)
-            trimmed[key] = text[:300] + "..." if len(text) > 300 else value
-    return trimmed
-
-
-def _audit_entry_text(entry: dict) -> str:
-    return json.dumps(entry, default=str).lower()
-
-
-def _matches_audit_query(entry: dict, query: str) -> bool:
-    q = query.strip().lower()
-    if not q:
+def _log_matches_rule(log: dict[str, Any], rule: dict[str, Any]) -> bool:
+    payload = log.get("payload")
+    if not isinstance(payload, dict):
         return False
-    return q in _audit_entry_text(entry)
+
+    rule_id = rule.get("id")
+    rule_name = rule.get("name")
+    payload_id = payload.get("id")
+    payload_name = payload.get("name")
+
+    if rule_id is not None and payload_id is not None and str(rule_id) == str(payload_id):
+        return True
+    if rule_name and payload_name and str(rule_name).lower() == str(payload_name).lower():
+        return True
+    return False
+
+
+async def _fetch_all_audit_log_pages(
+    context: ToolContext,
+    start_date: str,
+    end_date: str,
+    action_taken: str,
+) -> dict[str, Any]:
+    all_logs: list[dict[str, Any]] = []
+    page = 1
+    last_raw: dict[str, Any] = {}
+    total_count = 0
+
+    while True:
+        raw = await context.clickpost_client.get_audit_logs(
+            token=context.token,
+            start_date=start_date,
+            end_date=end_date,
+            action_taken=action_taken,
+            page_size=_DEFAULT_PAGE_SIZE,
+            page=page,
+        )
+        if not isinstance(raw, dict):
+            return {"data": all_logs, "totalCount": len(all_logs), "pageSize": _DEFAULT_PAGE_SIZE}
+
+        last_raw = raw
+        page_data = raw.get("data")
+        if isinstance(page_data, list):
+            all_logs.extend(entry for entry in page_data if isinstance(entry, dict))
+
+        total_count = int(raw.get("totalCount") or len(all_logs))
+        if raw.get("nextUrl") is None or len(all_logs) >= total_count:
+            break
+
+        page += 1
+        if page > max(1, (total_count // _DEFAULT_PAGE_SIZE) + 2):
+            logger.warning(
+                "activity-log pagination stopped early: page=%s totalCount=%s fetched=%s",
+                page,
+                total_count,
+                len(all_logs),
+            )
+            break
+
+    return {
+        **last_raw,
+        "data": all_logs,
+        "totalCount": total_count or len(all_logs),
+        "pageSize": last_raw.get("pageSize", _DEFAULT_PAGE_SIZE),
+        "nextUrl": None,
+        "previousUrl": None,
+    }
 
 
 async def _fetch_audit_logs_raw(
@@ -206,26 +318,58 @@ async def _fetch_audit_logs_raw(
     api_start = start.isoformat()
     api_end = end.isoformat()
 
-    raw = await context.clickpost_client.get_audit_logs(
-        token=context.token,
-        start_date=api_start,
-        end_date=api_end,
-        action_taken=action_taken,
-        page_size=_DEFAULT_PAGE_SIZE,
-    )
-    logger.debug(
-        "activity-log response: totalCount=%s",
-        raw.get("totalCount") if isinstance(raw, dict) else "?",
-    )
+    raw = await _fetch_all_audit_log_pages(context, api_start, api_end, action_taken)
+    logger.debug("activity-log response: totalCount=%s fetched=%s", raw.get("totalCount"), len(raw.get("data", [])))
+    return _shape_audit_logs(raw, api_start, api_end, action_taken)
 
-    logs = _extract_logs(raw)
+
+async def _fetch_audit_logs_for_rule(
+    context: ToolContext,
+    rule_id: str,
+    action_taken: str,
+) -> dict[str, Any]:
+    resolved = _resolve_rules_by_query(await _fetch_all_raw_rules(context), rule_id.strip())
+    if "error" in resolved:
+        return resolved
+
+    if "rules" in resolved:
+        return {
+            **resolved,
+            "hint": "Resolve to a single rule first, then retry fetch_audit_logs_for_rule.",
+        }
+
+    rule = resolved["rule"]
+    rule_updated_at = rule.get("updated_at")
+    if not rule_updated_at:
+        return {
+            "error": (
+                f"Rule '{rule.get('name')}' has no updated_at timestamp. "
+                "Use fetch_audit_logs with an explicit date range instead."
+            ),
+            "rule": rule,
+        }
+
+    parsed = _parse_datetime(str(rule_updated_at))
+    if parsed is None:
+        return {
+            "error": f"Could not parse rule updated_at: {rule_updated_at!r}",
+            "rule": rule,
+        }
+
+    target_date = parsed.date().isoformat()
+    audit = await _fetch_audit_logs(context, target_date, target_date, action_taken)
+    if "error" in audit:
+        return {**audit, "rule": rule, "rule_last_updated_at": parsed.isoformat()}
+
+    matching_logs = [log for log in audit.get("logs", []) if _log_matches_rule(log, rule)]
     return {
-        "start_date": api_start,
-        "end_date": api_end,
+        "rule": rule,
+        "rule_last_updated_at": parsed.isoformat(),
+        "audit_window": {"start_date": target_date, "end_date": target_date},
         "action_taken": action_taken,
-        "count": raw.get("totalCount", len(logs)) if isinstance(raw, dict) else len(logs),
-        "page_size": raw.get("pageSize") if isinstance(raw, dict) else None,
-        "logs": logs,
+        "matching_log_count": len(matching_logs),
+        "matching_logs": matching_logs,
+        "all_logs_in_window": audit,
     }
 
 
@@ -235,88 +379,37 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
         end_date: str,
         action_taken: ActionTaken,
     ) -> dict[str, Any]:
-        return await _fetch_audit_logs_raw(context, start_date, end_date, action_taken)
+        return await _fetch_audit_logs(context, start_date, end_date, action_taken)
 
-    async def summarize_audit_logs(
-        start_date: str,
-        end_date: str,
-        action_taken: ActionTaken,
+    async def fetch_audit_logs_for_rule(
+        rule_id: str,
+        action_taken: ActionTaken = "Allocation",
     ) -> dict[str, Any]:
-        payload = await _fetch_audit_logs_raw(context, start_date, end_date, action_taken)
-        if "error" in payload:
-            return payload
-
-        logs = payload.get("logs") or []
-        compact = [_compact_audit_entry(entry) for entry in logs[:_MAX_SUMMARY_LOGS]]
-        return {
-            "start_date": payload["start_date"],
-            "end_date": payload["end_date"],
-            "action_taken": payload["action_taken"],
-            "count": payload["count"],
-            "sample_size": len(compact),
-            "logs_sample": compact,
-            "hint": (
-                "Compact sample only. Use search_audit_logs with a query to find specific changes "
-                "(rule name, username, action text)."
-            ),
-        }
-
-    async def search_audit_logs(
-        start_date: str,
-        end_date: str,
-        action_taken: ActionTaken,
-        query: str,
-    ) -> dict[str, Any]:
-        query = query.strip()
-        if not query:
-            return {
-                "error": (
-                    "query is required. Pass a rule name, username, or action text to search for. "
-                    "Use summarize_audit_logs for a date-range overview."
-                )
-            }
-
-        payload = await _fetch_audit_logs_raw(context, start_date, end_date, action_taken)
-        if "error" in payload:
-            return payload
-
-        logs = payload.get("logs") or []
-        matching = [entry for entry in logs if _matches_audit_query(entry, query)]
-        return {
-            "start_date": payload["start_date"],
-            "end_date": payload["end_date"],
-            "action_taken": payload["action_taken"],
-            "query": query,
-            "total_in_range": payload["count"],
-            "total_matching": len(matching),
-            "logs": [_compact_audit_entry(entry) for entry in matching],
-        }
+        return await _fetch_audit_logs_for_rule(context, rule_id, action_taken)
 
     return [
         StructuredTool.from_function(
             coroutine=fetch_audit_logs,
             name="fetch_audit_logs",
             description=(
-                "PRIMARY — Full audit/activity logs for a date range and module category. Max 7-day "
-                "window. action_taken='Allocation' for rule changes, 'Carrier' for account changes. "
-                "If too large, use summarize_audit_logs or search_audit_logs."
+                "Fetch Clickpost dashboard activity logs for a date range. "
+                "action_taken filters by section_name (e.g. 'Allocation' for allocation APIs). "
+                "Each log has updated_at, username, service_name, and a payload snapshot "
+                "(not a guaranteed before/after diff). Fetches all API pages for the window. "
+                "This tool allows at most 7 days per call."
             ),
-            args_schema=AuditLogRangeInput,
+            args_schema=FetchAuditLogsInput,
         ),
         StructuredTool.from_function(
-            coroutine=summarize_audit_logs,
-            name="summarize_audit_logs",
+            coroutine=fetch_audit_logs_for_rule,
+            name="fetch_audit_logs_for_rule",
             description=(
-                "SUB-TOOL — Audit log count plus a small sample when fetch_audit_logs is too large."
+                "Resolve a rule, then fetch audit logs for the calendar date of the rule's "
+                "updated_at with action_taken (default Allocation). Returns matching_logs "
+                "where payload id/name matches the rule, plus all logs that day. "
+                "Rule updated_at and log updated_at may differ; empty matching_logs does not "
+                "prove no change — widen the date range with fetch_audit_logs."
             ),
-            args_schema=AuditLogRangeInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=search_audit_logs,
-            name="search_audit_logs",
-            description=(
-                "SUB-TOOL — Search audit logs by query substring (username, rule name, action text)."
-            ),
-            args_schema=SearchAuditLogsInput,
+            args_schema=FetchAuditLogsForRuleInput,
         ),
     ]

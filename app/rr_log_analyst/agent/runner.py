@@ -14,11 +14,23 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.tools import BaseTool
+from pydantic import ValidationError
 
 from app.clients.clickpost import ClickpostAPIError, ClickpostPermissionError
-from app.clients.llm import create_chat_model
+from app.clients.llm import create_chat_model, create_secondary_chat_model
 from app.config import settings
 from app.rr_log_analyst.agent.context import merge_usage, prepare_messages, serialize_usage
+from app.rr_log_analyst.agent.result_query import (
+    build_auto_prefetch_message,
+    extract_query_keywords,
+)
+from app.rr_log_analyst.agent.scratchpad import (
+    build_compact_envelope,
+    fallback_scratchpad,
+    prepare_raw_data_parts,
+    summarize_raw_data_parts,
+)
+from app.rr_log_analyst.memory.tool_results import StoredToolResult, tool_result_store
 from app.rr_log_analyst.tools import ToolContext, create_tools
 
 logger = logging.getLogger(__name__)
@@ -87,7 +99,67 @@ def _summarize_result(tool_name: str, result: dict) -> str:
         first = result["results"][0] if result["results"] else {}
         ranked = first.get("total_ranked", 0)
         return f"{result['count']} order(s), top result has {ranked} ranked couriers"
+    if "resolved" in result:
+        resolved = result["resolved"]
+        return (
+            f"Resolved enterprise: {resolved.get('name')} "
+            f"(id={resolved.get('enterprise_user_profile_id')})"
+        )
+    if "matches" in result:
+        count = result.get("match_count", len(result["matches"]))
+        return f"{count} enterprise match(es) — ask user to pick or refine name"
     return "Completed"
+
+
+def _summarize_scratchpad_envelope(tool_name: str, envelope: dict[str, Any]) -> str:
+    text = envelope.get("scratchpad") or ""
+    if not text and envelope.get("scratchpad_stored"):
+        total = envelope.get("scratchpad_total_chars", 0)
+        batches = envelope.get("scratchpad_batches", 0)
+        return f"{tool_name}: full scratchpad stored ({total} chars, {batches} batches)"
+    preview = text[:200].replace("\n", " ")
+    if len(text) > 200:
+        preview += "..."
+    if preview:
+        return f"{tool_name}: {preview}"
+    return _summarize_result(tool_name, envelope)
+
+
+def _build_tool_message_content(
+    *,
+    tool_call_id: str,
+    tool_name: str,
+    result: dict[str, Any],
+    scratchpad: str,
+    scratchpad_batches: list[str],
+    raw_data_parts: list[str],
+    use_scratchpad: bool,
+) -> str:
+    if use_scratchpad:
+        return json.dumps(
+            build_compact_envelope(
+                result_id=tool_call_id,
+                tool_name=tool_name,
+                scratchpad=scratchpad,
+                batches=scratchpad_batches,
+                raw_data_parts=raw_data_parts,
+            )
+        )
+    return json.dumps(result)
+
+
+def _latest_user_text(messages: list[BaseMessage]) -> str | None:
+    for message in reversed(messages):
+        if isinstance(message, HumanMessage):
+            content = message.content
+            if isinstance(content, str) and content.startswith("[Auto-fetched tool result slices"):
+                continue
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                text = _extract_text_delta(content)
+                return text
+    return None
 
 
 async def _invoke_tool(tool: BaseTool, args: dict[str, Any]) -> dict[str, Any]:
@@ -108,6 +180,9 @@ async def _invoke_tool(tool: BaseTool, args: dict[str, Any]) -> dict[str, Any]:
     except ClickpostAPIError as e:
         logger.warning("Tool %s Clickpost error: %s", tool.name, e)
         return {"error": str(e), "code": "clickpost_error"}
+    except ValidationError as e:
+        logger.warning("Tool %s invalid arguments: %s", tool.name, e)
+        return {"error": f"Invalid tool arguments: {e.errors()[0]['msg']}"}
     except Exception as e:
         logger.exception("Tool %s failed", tool.name)
         return {"error": f"Tool {tool.name} failed: {str(e)}"}
@@ -123,18 +198,28 @@ class AgentRunner:
         system_prompt: str,
         model: str,
         token: str,
+        conversation_id: str,
     ) -> AsyncGenerator[tuple[str, dict[str, Any]], None]:
         """Agentic loop using ChatAnthropic.bind_tools(). Yields SSE event tuples."""
 
-        tool_context = ToolContext(token=token, clickpost_client=self.clickpost_client)
+        tool_context = ToolContext(
+            token=token,
+            clickpost_client=self.clickpost_client,
+            conversation_id=conversation_id,
+        )
         tools = create_tools(tool_context)
         tools_by_name = {tool.name: tool for tool in tools}
         llm = create_chat_model(model)
+        secondary_llm = (
+            create_secondary_chat_model() if settings.rr_analyst_scratchpad_enabled else None
+        )
+        use_scratchpad = settings.rr_analyst_scratchpad_enabled
         total_usage: dict[str, int] | None = None
+        secondary_usage: dict[str, int] | None = None
         usage_by_iteration: list[dict[str, int]] = []
 
         for iteration in range(settings.rr_analyst_max_iterations):
-            trimmed = prepare_messages(messages, system_prompt)
+            trimmed = prepare_messages(messages, system_prompt, conversation_id=conversation_id)
             is_last = iteration == settings.rr_analyst_max_iterations - 1
 
             if is_last:
@@ -146,6 +231,18 @@ class AgentRunner:
                 ]
 
             llm_input: list[BaseMessage] = [SystemMessage(content=system_prompt), *trimmed]
+
+            if use_scratchpad and not is_last:
+                user_text = _latest_user_text(trimmed)
+                if user_text:
+                    keywords = extract_query_keywords(user_text)
+                    prefetch = build_auto_prefetch_message(
+                        tool_result_store.list(conversation_id),
+                        keywords,
+                    )
+                    if prefetch:
+                        llm_input.append(HumanMessage(content=prefetch))
+
             runnable = llm if is_last else llm.bind_tools(tools)
             accumulated: AIMessageChunk | None = None
 
@@ -190,6 +287,7 @@ class AgentRunner:
                         "messages": messages,
                         "usage": total_usage,
                         "usage_by_iteration": usage_by_iteration,
+                        "secondary_usage": secondary_usage,
                     },
                 )
                 return
@@ -209,15 +307,94 @@ class AgentRunner:
                 else:
                     result = await _invoke_tool(tool, tool_args)
 
+                scratchpad = ""
+                scratchpad_batches: list[str] = []
+                raw_data_parts: list[str] = []
+
+                if use_scratchpad:
+                    raw_data_parts = prepare_raw_data_parts(result)
+                    tool_result_store.put(
+                        conversation_id,
+                        StoredToolResult(
+                            tool_call_id=tool_id,
+                            tool_name=tool_name,
+                            args=tool_args,
+                            result=result,
+                            scratchpad="",
+                            scratchpad_batches=[],
+                            raw_data_parts=raw_data_parts,
+                        ),
+                    )
+                    logger.info(
+                        "Stored full tool result tool=%s result_id=%s raw_data_parts=%d",
+                        tool_name,
+                        tool_id,
+                        len(raw_data_parts),
+                    )
+
+                if use_scratchpad and secondary_llm is not None and raw_data_parts:
+                    try:
+                        built = await summarize_raw_data_parts(
+                            secondary_llm,
+                            tool_name,
+                            tool_args,
+                            raw_data_parts,
+                        )
+                        scratchpad = built.scratchpad
+                        scratchpad_batches = built.batches
+                        secondary_usage = merge_usage(secondary_usage, built.usage)
+                    except Exception:
+                        logger.exception(
+                            "Scratchpad summarization failed for %s; using fallback",
+                            tool_name,
+                        )
+                        built = fallback_scratchpad(tool_name, result)
+                        scratchpad = built.scratchpad
+                        scratchpad_batches = built.batches
+                elif use_scratchpad:
+                    built = fallback_scratchpad(tool_name, result)
+                    scratchpad = built.scratchpad
+                    scratchpad_batches = built.batches
+
+                if use_scratchpad:
+                    tool_result_store.put(
+                        conversation_id,
+                        StoredToolResult(
+                            tool_call_id=tool_id,
+                            tool_name=tool_name,
+                            args=tool_args,
+                            result=result,
+                            scratchpad=scratchpad,
+                            scratchpad_batches=scratchpad_batches,
+                            raw_data_parts=raw_data_parts,
+                        ),
+                    )
+
+                tool_message_content = _build_tool_message_content(
+                    tool_call_id=tool_id,
+                    tool_name=tool_name,
+                    result=result,
+                    scratchpad=scratchpad,
+                    scratchpad_batches=scratchpad_batches,
+                    raw_data_parts=raw_data_parts,
+                    use_scratchpad=use_scratchpad,
+                )
                 messages.append(
                     ToolMessage(
-                        content=json.dumps(result),
+                        content=tool_message_content,
                         tool_call_id=tool_id,
                         name=tool_name,
                     )
                 )
 
-                summary = _summarize_result(tool_name, result)
+                if use_scratchpad:
+                    try:
+                        envelope = json.loads(tool_message_content)
+                        summary = _summarize_scratchpad_envelope(tool_name, envelope)
+                    except json.JSONDecodeError:
+                        summary = _summarize_result(tool_name, result)
+                else:
+                    summary = _summarize_result(tool_name, result)
                 yield ("tool_result", {"tool": tool_name, "summary": summary})
 
         yield ("error", {"code": "max_iterations", "message": "Maximum iterations reached"})

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -7,6 +8,7 @@ from langchain_core.messages.ai import UsageMetadata
 from langchain_core.messages.utils import count_tokens_approximately
 
 from app.config import settings
+from app.rr_log_analyst.memory.tool_results import tool_result_store
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +43,6 @@ def merge_usage(
     }
 
 
-MAX_TOOL_RESULT_CHARS = 80_000
-
-
 def estimate_tokens(text: str | None) -> int:
     """Approximate token count for plain text (roles, tool metadata not included)."""
     if not text:
@@ -61,29 +60,66 @@ def count_conversation_tokens(messages: list[BaseMessage]) -> int:
     return sum(message_token_count(message) for message in messages)
 
 
-def _truncate_tool_results(messages: list[BaseMessage]) -> list[BaseMessage]:
+def _compact_tool_message_content(content: str, conversation_id: str) -> str:
+    from app.rr_log_analyst.agent.scratchpad import build_compact_envelope
+
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return content
+
+    if not isinstance(parsed, dict) or "result_id" not in parsed:
+        return content
+
+    result_id = parsed.get("result_id")
+    stored = tool_result_store.get(conversation_id, str(result_id)) if result_id else None
+
+    if stored is not None:
+        return json.dumps(
+            build_compact_envelope(
+                result_id=str(result_id),
+                tool_name=stored.tool_name,
+                scratchpad=stored.scratchpad,
+                batches=stored.scratchpad_batches,
+                raw_data_parts=stored.raw_data_parts,
+            )
+        )
+
+    scratchpad = parsed.get("scratchpad")
+    if isinstance(scratchpad, str) and len(scratchpad) > settings.scratchpad_inline_max_chars:
+        return json.dumps(
+            {
+                "result_id": result_id,
+                "tool": parsed.get("tool", ""),
+                "scratchpad_stored": True,
+                "scratchpad_total_chars": len(scratchpad),
+                "scratchpad_batches": parsed.get("scratchpad_batches", 1),
+                "note": parsed.get("note", "Use query_full_scratchpad for the complete scratchpad."),
+            }
+        )
+
+    return content
+
+
+def compact_tool_messages_for_llm(
+    messages: list[BaseMessage],
+    conversation_id: str,
+) -> list[BaseMessage]:
+    """Replace oversized scratchpad ToolMessages with compact envelopes for the main LLM."""
     out: list[BaseMessage] = []
     for message in messages:
-        if not isinstance(message, ToolMessage):
+        if not isinstance(message, ToolMessage) or not isinstance(message.content, str):
             out.append(message)
             continue
 
-        content = message.content
-        if not isinstance(content, str) or len(content) <= MAX_TOOL_RESULT_CHARS:
+        compact = _compact_tool_message_content(message.content, conversation_id)
+        if compact == message.content:
             out.append(message)
             continue
 
-        truncated = content[:MAX_TOOL_RESULT_CHARS]
-        truncated += "\n\n[... TRUNCATED — result too large to fit in context ...]"
-        logger.info(
-            "Truncated tool_result %s from %d to %d chars",
-            message.tool_call_id,
-            len(content),
-            len(truncated),
-        )
         out.append(
             ToolMessage(
-                content=truncated,
+                content=compact,
                 tool_call_id=message.tool_call_id,
                 name=message.name,
             )
@@ -127,8 +163,10 @@ def trim_messages_to_budget(
 def prepare_messages(
     messages: list[BaseMessage],
     system_prompt: str,
+    conversation_id: str | None = None,
 ) -> list[BaseMessage]:
-    """Truncate oversized tool results and trim to the token budget."""
-    messages = _truncate_tool_results(messages)
+    """Compact stored tool envelopes and trim conversation to the token budget."""
+    if conversation_id:
+        messages = compact_tool_messages_for_llm(messages, conversation_id)
     system_tokens = count_tokens_approximately([SystemMessage(content=system_prompt)])
     return trim_messages_to_budget(messages, system_tokens)

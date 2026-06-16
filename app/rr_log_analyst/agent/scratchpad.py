@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -151,31 +152,32 @@ async def summarize_raw_data_parts(
     if not raw_data_parts:
         return ScratchpadBuildResult(scratchpad="", batches=[], usage=None)
 
-    batch_summaries: list[str] = []
     total_usage: dict[str, int] | None = None
     args_text = _args_summary(tool_args)
     part_total = len(raw_data_parts)
 
     logger.info(
-        "Scratchpad summarization tool=%s: %d stored data parts → %d separate Haiku calls",
+        "Scratchpad summarization tool=%s: %d stored data parts → %d parallel Haiku calls",
         tool_name,
         part_total,
         part_total,
     )
 
-    for index, data_part in enumerate(raw_data_parts, start=1):
-        prompt = _SUMMARIZE_PART_PROMPT.format(
+    prompts = [
+        _SUMMARIZE_PART_PROMPT.format(
             tool_name=tool_name,
             args_summary=args_text,
             part_index=index,
             part_total=part_total,
             data_part=data_part,
         )
+        for index, data_part in enumerate(raw_data_parts, start=1)
+    ]
+
+    async def _summarize_one(prompt: str, index: int) -> str:
         try:
             response = await llm.ainvoke([HumanMessage(content=prompt)])
-            batch_summaries.append(_extract_text(response.content).strip())
-            usage = serialize_usage(response.usage_metadata)
-            total_usage = merge_usage(total_usage, usage)
+            return response
         except Exception:
             logger.exception(
                 "Scratchpad Haiku summarization failed on part %d/%d for tool %s",
@@ -184,6 +186,16 @@ async def summarize_raw_data_parts(
                 tool_name,
             )
             raise
+
+    responses = await asyncio.gather(
+        *[_summarize_one(prompt, i) for i, prompt in enumerate(prompts, start=1)]
+    )
+
+    batch_summaries: list[str] = []
+    for response in responses:
+        batch_summaries.append(_extract_text(response.content).strip())
+        usage = serialize_usage(response.usage_metadata)
+        total_usage = merge_usage(total_usage, usage)
 
     return ScratchpadBuildResult(
         scratchpad=assemble_scratchpad(batch_summaries),

@@ -25,6 +25,7 @@ from app.rr_log_analyst.agent.result_query import (
     extract_query_keywords,
 )
 from app.rr_log_analyst.agent.scratchpad import (
+    ScratchpadBuildResult,
     build_compact_envelope,
     fallback_scratchpad,
     prepare_raw_data_parts,
@@ -294,6 +295,8 @@ class AgentRunner:
 
             messages.append(ai_message)
 
+            # Phase 1: invoke all tools (sequential — tools may have side effects)
+            tool_invocations: list[tuple[str, str, dict, dict, list[str]]] = []
             for tool_call in accumulated.tool_calls:
                 tool_name = tool_call["name"]
                 tool_args = tool_call.get("args") or {}
@@ -307,12 +310,9 @@ class AgentRunner:
                 else:
                     result = await _invoke_tool(tool, tool_args)
 
-                scratchpad = ""
-                scratchpad_batches: list[str] = []
-                raw_data_parts: list[str] = []
+                raw_data_parts = prepare_raw_data_parts(result) if use_scratchpad else []
 
                 if use_scratchpad:
-                    raw_data_parts = prepare_raw_data_parts(result)
                     tool_result_store.put(
                         conversation_id,
                         StoredToolResult(
@@ -332,29 +332,45 @@ class AgentRunner:
                         len(raw_data_parts),
                     )
 
+                tool_invocations.append((tool_id, tool_name, tool_args, result, raw_data_parts))
+
+            # Phase 2: build scratchpads in parallel across all tool results
+            scratchpad_tasks = []
+            for tool_id, tool_name, tool_args, result, raw_data_parts in tool_invocations:
                 if use_scratchpad and secondary_llm is not None and raw_data_parts:
-                    try:
-                        built = await summarize_raw_data_parts(
-                            secondary_llm,
-                            tool_name,
-                            tool_args,
-                            raw_data_parts,
-                        )
-                        scratchpad = built.scratchpad
-                        scratchpad_batches = built.batches
-                        secondary_usage = merge_usage(secondary_usage, built.usage)
-                    except Exception:
-                        logger.exception(
-                            "Scratchpad summarization failed for %s; using fallback",
-                            tool_name,
-                        )
-                        built = fallback_scratchpad(tool_name, result)
-                        scratchpad = built.scratchpad
-                        scratchpad_batches = built.batches
-                elif use_scratchpad:
+                    scratchpad_tasks.append(
+                        summarize_raw_data_parts(secondary_llm, tool_name, tool_args, raw_data_parts)
+                    )
+                else:
+                    async def _immediate(tn=tool_name, r=result):
+                        if use_scratchpad:
+                            return fallback_scratchpad(tn, r)
+                        return ScratchpadBuildResult(scratchpad="", batches=[], usage=None)
+                    scratchpad_tasks.append(_immediate())
+
+            scratchpad_results_raw = await asyncio.gather(
+                *scratchpad_tasks, return_exceptions=True,
+            )
+
+            # Phase 3: assemble tool messages
+            for idx, (tool_id, tool_name, tool_args, result, raw_data_parts) in enumerate(
+                tool_invocations
+            ):
+                built_or_exc = scratchpad_results_raw[idx]
+                if isinstance(built_or_exc, Exception):
+                    logger.exception(
+                        "Scratchpad summarization failed for %s; using fallback",
+                        tool_name,
+                        exc_info=built_or_exc,
+                    )
                     built = fallback_scratchpad(tool_name, result)
-                    scratchpad = built.scratchpad
-                    scratchpad_batches = built.batches
+                else:
+                    built = built_or_exc
+
+                scratchpad = built.scratchpad
+                scratchpad_batches = built.batches
+                if built.usage:
+                    secondary_usage = merge_usage(secondary_usage, built.usage)
 
                 if use_scratchpad:
                     tool_result_store.put(

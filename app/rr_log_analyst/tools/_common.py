@@ -22,6 +22,27 @@ def as_list(raw: Any) -> list:
     return []
 
 
+def compact_rule_summary(shaped: dict) -> dict:
+    """Return a minimal index entry from an already-shaped rule."""
+    summary: dict = {}
+    for key in ("id", "name", "priority", "enabled"):
+        val = shaped.get(key)
+        if val is not None:
+            summary[key] = val
+    conditions = shaped.get("rule")
+    if isinstance(conditions, list):
+        summary["condition_keys"] = sorted(
+            {
+                k
+                for cond in conditions
+                if isinstance(cond, dict)
+                for k in cond
+                if k not in ("id", "_id")
+            }
+        )
+    return summary
+
+
 def shape_rule(rule: dict) -> dict:
     """Pick the fields of a filter / ordered-list rule the analyst cares about."""
     shaped = {
@@ -136,7 +157,6 @@ def shape_preference_entry(entry: dict) -> dict[str, Any]:
 def shape_filters_ran(filters_ran: Any) -> dict[str, Any]:
     if not isinstance(filters_ran, dict):
         return {}
-    return {key: filters_ran[key] for key in FILTERS_RAN_KEYS if key in filters_ran}
     return {key: filters_ran[key] for key in FILTERS_RAN_KEYS if key in filters_ran}
 
 

@@ -55,9 +55,7 @@ class ReferenceInput(BaseModel):
 
 
 class ReferenceBatchInput(BaseModel):
-class ReferenceBatchInput(BaseModel):
     reference_numbers: list[str] = Field(
-        description="List of shipment reference numbers to fetch (max 20).",
         description="List of shipment reference numbers to fetch (max 20).",
         min_length=1,
         max_length=20,
@@ -435,7 +433,6 @@ def _shape_rr_log(reference_number: str, raw: Any) -> dict[str, Any]:
 
 
 async def _load_rr_log(context: ToolContext, reference_number: str) -> dict[str, Any]:
-async def _load_rr_log(context: ToolContext, reference_number: str) -> dict[str, Any]:
     reference_number = reference_number.strip()
     if not reference_number:
         return {"error": "reference_number is required"}
@@ -639,7 +636,6 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
                 "complete preference_array. If too large, use summarize_rr_log or get_rr_log_* sub-tools."
             ),
             args_schema=ReferenceInput,
-            args_schema=ReferenceInput,
         ),
         StructuredTool.from_function(
             coroutine=fetch_rr_logs_batch,
@@ -685,54 +681,7 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
             name="search_rr_log_courier",
             description=(
                 "SUB-TOOL — Trace one courier through pipeline stages. Requires account_id or cp_name."
-                "PRIMARY — Full RR logs for multiple reference numbers (max 20). Use to compare "
-                "allocations. If too large, use summarize_rr_logs_batch."
             ),
-            args_schema=ReferenceBatchInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=summarize_rr_log,
-            name="summarize_rr_log",
-            description=(
-                "SUB-TOOL — Compact RR log overview: matched filter, top courier, total ranked. "
-                "Use when fetch_rr_log result is too large."
-            ),
-            args_schema=ReferenceInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=get_rr_log_order,
-            name="get_rr_log_order",
-            description="SUB-TOOL — Order/request fields only from an RR log.",
-            args_schema=ReferenceInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=get_rr_log_pipeline,
-            name="get_rr_log_pipeline",
-            description=(
-                f"SUB-TOOL — One pipeline stage from filters_ran. Stages: {_stages_hint}. "
-                "Pass account_id or cp_name to check carrier survival at that stage."
-            ),
-            args_schema=PipelineStageInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=get_rr_log_ranking,
-            name="get_rr_log_ranking",
-            description="SUB-TOOL — Final ranking only; filter by account_id/cp_name or top N.",
-            args_schema=RankingInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=search_rr_log_courier,
-            name="search_rr_log_courier",
-            description=(
-                "SUB-TOOL — Trace one courier through pipeline stages. Requires account_id or cp_name."
-            ),
-            args_schema=SearchCourierInLogInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=summarize_rr_logs_batch,
-            name="summarize_rr_logs_batch",
-            description="SUB-TOOL — Compact summaries for multiple orders when fetch_rr_logs_batch is too large.",
-            args_schema=ReferenceBatchInput,
             args_schema=SearchCourierInLogInput,
         ),
         StructuredTool.from_function(

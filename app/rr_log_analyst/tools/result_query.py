@@ -5,7 +5,6 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from app.rr_log_analyst.agent.result_query import match_json_keywords
 from app.rr_log_analyst.memory.tool_results import tool_result_store
 from app.rr_log_analyst.tools.context import ToolContext
 
@@ -68,6 +67,8 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
                 "error": f"No stored result for result_id={result_id!r}.",
                 "available_result_ids": available[:20],
             }
+
+        from app.rr_log_analyst.agent.result_query import match_json_keywords  # deferred to break circular import
 
         matched = match_json_keywords(
             stored.result,

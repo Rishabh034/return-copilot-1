@@ -10,6 +10,19 @@ from typing import Any
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 
+def utc_now_iso_ms() -> str:
+    """Current UTC time as 2026-06-14T10:28:01.000Z (ms precision, Z suffix)."""
+    return to_iso_ms(datetime.now(timezone.utc))
+
+
+def to_iso_ms(dt: datetime) -> str:
+    """Format a datetime as 2026-06-14T10:28:01.000Z (ms precision, Z suffix)."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
+
+
 def _extract_text(content: str | list) -> str:
     if isinstance(content, str):
         return content
@@ -22,19 +35,53 @@ def _extract_text(content: str | list) -> str:
     return ""
 
 
-def to_display_messages(messages: list[BaseMessage]) -> list[dict[str, str]]:
+def _extract_thinking(content: str | list) -> str:
+    """Pull the model's extended-thinking text out of an AI message's content blocks."""
+    if isinstance(content, list):
+        return "".join(
+            block.get("thinking", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "thinking"
+        )
+    return ""
+
+
+def _message_time(message: BaseMessage) -> str | None:
+    ts = message.additional_kwargs.get("message_time")
+    return ts if isinstance(ts, str) else None
+
+
+def to_display_messages(messages: list[BaseMessage]) -> list[dict[str, str | None]]:
     """Collapse LangChain messages to simple user/assistant pairs for the API and UI."""
-    display: list[dict[str, str]] = []
+    display: list[dict[str, str | None]] = []
 
     for message in messages:
         if isinstance(message, HumanMessage):
             text = _extract_text(message.content)
             if text:
-                display.append({"role": "user", "content": text})
+                display.append(
+                    {"role": "user", "content": text, "message_time": _message_time(message)}
+                )
         elif isinstance(message, AIMessage):
+            message_time = _message_time(message)
+            thinking = _extract_thinking(message.content)
+            if thinking:
+                display.append(
+                    {
+                        "role": "thinking",
+                        "content": thinking,
+                        "message_time": message_time,
+                    }
+                )
             text = _extract_text(message.content)
             if text:
-                display.append({"role": "assistant", "content": text})
+                display.append(
+                    {
+                        "role": "assistant",
+                        "content": text,
+                        "message_time": message_time,
+                    }
+                )
         # ToolMessage and SystemMessage are internal — not shown in the chat UI.
 
     return display
@@ -79,12 +126,38 @@ class ConversationStore:
     def __init__(self) -> None:
         self._conversations: dict[str, Conversation] = {}
 
+    @staticmethod
+    def new_id() -> str:
+        """Allocate a conversation id without persisting anything."""
+        return str(uuid.uuid4())
+
     def create(self, token: str) -> Conversation:
         conversation = Conversation(
             id=str(uuid.uuid4()),
             token=token,
         )
         self._conversations[conversation.id] = conversation
+        return conversation
+
+    def save(
+        self,
+        conversation_id: str,
+        token: str,
+        messages: list[BaseMessage],
+    ) -> Conversation:
+        """Upsert a conversation. Creates it on first successful turn so failed
+        turns never leave an empty conversation behind."""
+        conversation = self._conversations.get(conversation_id)
+        if conversation is None:
+            conversation = Conversation(
+                id=conversation_id,
+                token=token,
+                messages=messages,
+            )
+            self._conversations[conversation_id] = conversation
+        else:
+            conversation.messages = messages
+            conversation.updated_at = datetime.now(timezone.utc)
         return conversation
 
     def get(self, conversation_id: str) -> Conversation | None:

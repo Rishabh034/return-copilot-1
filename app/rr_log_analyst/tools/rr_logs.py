@@ -130,6 +130,21 @@ class FetchRRLogByShipmentInput(BaseModel):
             "awb/order_id optional. If omitted with start_date, defaults to the last 90 days."
         ),
     )
+    page: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "1-indexed page of track-order shipment results. A date-range lookup can match "
+            "more shipments than fit on one page; the response reports pagination.has_more — "
+            "call again with the next page to fetch the rest."
+        ),
+    )
+    page_size: int = Field(
+        default=100,
+        ge=1,
+        le=200,
+        description="Shipments per page from the track-order API (default 100).",
+    )
 
 
 def _normalize_shipment_lookup_input(
@@ -242,6 +257,42 @@ def _extract_shipments_from_track_order_response(raw: Any) -> list[dict[str, Any
     return [s for s in shipments if isinstance(s, dict)]
 
 
+def _build_pagination(
+    *,
+    page: int,
+    page_size: int,
+    returned: int,
+    total_count: int | None,
+) -> dict[str, Any]:
+    pagination: dict[str, Any] = {
+        "page": page,
+        "page_size": page_size,
+        "returned": returned,
+        "total_count": total_count,
+    }
+    if total_count is not None:
+        pagination["has_more"] = page * page_size < total_count
+        pagination["total_pages"] = (total_count + page_size - 1) // page_size
+    else:
+        # No total in the response — infer there may be more when the page is full.
+        pagination["has_more"] = returned >= page_size
+    return pagination
+
+
+def _extract_total_count(raw: Any) -> int | None:
+    """Pull the total matched-shipment count from a track-order response, if present."""
+    if not isinstance(raw, dict):
+        return None
+    for container in (raw.get("results"), raw):
+        if not isinstance(container, dict):
+            continue
+        for key in ("total_count", "totalCount", "total", "count"):
+            val = container.get(key)
+            if isinstance(val, int):
+                return val
+    return None
+
+
 def _shape_shipment(shipment: dict[str, Any], reference_number: str) -> dict[str, Any]:
     return {
         "awb": shipment.get("awb"),
@@ -305,6 +356,8 @@ async def _resolve_reference_number(
     order_id: str | None,
     start_date: str | None,
     end_date: str | None,
+    page: int = 1,
+    page_size: int = 100,
 ) -> dict[str, Any]:
     try:
         start_ist, end_ist, start_day, end_day, used_default = _resolve_lookup_date_range(
@@ -321,12 +374,31 @@ async def _resolve_reference_number(
             order_id_list=[order_id] if order_id else None,
             shipment_registration_start_date_ist=start_ist,
             shipment_registration_end_date_ist=end_ist,
+            page_number=page,
+            page_size=page_size,
         )
     except Exception as e:
         return {"error": str(e), "awb": awb, "order_id": order_id}
 
     shipments = _extract_shipments_from_track_order_response(raw)
+    total_count = _extract_total_count(raw)
+    pagination = _build_pagination(
+        page=page,
+        page_size=page_size,
+        returned=len(shipments),
+        total_count=total_count,
+    )
     if not shipments:
+        # An empty page beyond the first just means we ran past the last page —
+        # don't treat it as "shipment not found / widen the date range".
+        if page > 1:
+            return {
+                "count": 0,
+                "shipments": [],
+                "reference_numbers": [],
+                "message": f"No shipments on page {page}; the previous page was the last.",
+                "pagination": pagination,
+            }
         return _shipment_not_found_response(
             awb=awb,
             order_id=order_id,
@@ -347,6 +419,7 @@ async def _resolve_reference_number(
             "error": "Shipment(s) found but reference_number is missing in track-order response.",
             "awb": awb,
             "order_id": order_id,
+            "pagination": pagination,
         }
 
     date_range_used = {
@@ -360,6 +433,7 @@ async def _resolve_reference_number(
         "shipments": shaped,
         "reference_numbers": [s["reference_number"] for s in shaped],
         "date_range_used": date_range_used,
+        "pagination": pagination,
     }
 
 
@@ -370,6 +444,8 @@ async def _load_rr_log_by_shipment(
     order_id: str | None,
     start_date: str | None,
     end_date: str | None,
+    page: int = 1,
+    page_size: int = 100,
 ) -> dict[str, Any]:
     resolved = await _resolve_reference_number(
         context,
@@ -377,12 +453,15 @@ async def _load_rr_log_by_shipment(
         order_id=order_id,
         start_date=start_date,
         end_date=end_date,
+        page=page,
+        page_size=page_size,
     )
     if resolved.get("needs_date_range") or resolved.get("error"):
         return resolved
 
     shipments = resolved.get("shipments") or []
     date_range_used = resolved.get("date_range_used")
+    pagination = resolved.get("pagination")
 
     async def _one(shipment: dict[str, Any]) -> dict[str, Any]:
         reference_number = shipment["reference_number"]
@@ -411,6 +490,7 @@ async def _load_rr_log_by_shipment(
     return {
         "count": len(results),
         "date_range_used": date_range_used,
+        "pagination": pagination,
         "results": list(results),
     }
 
@@ -493,6 +573,8 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
         order_id: str | None = None,
         start_date: str | None = None,
         end_date: str | None = None,
+        page: int = 1,
+        page_size: int = 100,
     ) -> dict[str, Any]:
         normalized = _normalize_shipment_lookup_input(awb, order_id, start_date, end_date)
         if isinstance(normalized, dict):
@@ -504,6 +586,8 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
             order_id=order_id_value,
             start_date=start,
             end_date=end,
+            page=page,
+            page_size=page_size,
         )
 
     async def resolve_reference_number(
@@ -511,6 +595,8 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
         order_id: str | None = None,
         start_date: str | None = None,
         end_date: str | None = None,
+        page: int = 1,
+        page_size: int = 100,
     ) -> dict[str, Any]:
         normalized = _normalize_shipment_lookup_input(awb, order_id, start_date, end_date)
         if isinstance(normalized, dict):
@@ -522,6 +608,8 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
             order_id=order_id_value,
             start_date=start,
             end_date=end,
+            page=page,
+            page_size=page_size,
         )
 
     async def fetch_rr_logs_batch(reference_numbers: list[str]) -> dict[str, Any]:
@@ -655,8 +743,9 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
                 f"If start_date/end_date are omitted, searches the last {_DEFAULT_LOOKUP_DAYS} days "
                 "first. If nothing is found, returns needs_date_range=true — ask the user for dates "
                 "and retry with the same awb or order_id plus start_date and end_date. "
-                "Returns {count, date_range_used, results:[{reference_number, shipment, rr_log}]} — "
-                "one entry per matched shipment (date-range lookups can match many)."
+                "Returns {count, date_range_used, pagination, results:[{reference_number, shipment, "
+                "rr_log}]} — one entry per matched shipment. Date-range lookups can match more than "
+                "one page; when pagination.has_more is true, call again with the next page."
             ),
             args_schema=FetchRRLogByShipmentInput,
         ),
@@ -669,7 +758,8 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
                 f"(date-range-only lookup). Uses the last {_DEFAULT_LOOKUP_DAYS} days when dates "
                 "are omitted; returns needs_date_range=true if not found so you can ask the user "
                 "for a wider window. Returns {count, shipments:[...], reference_numbers:[...], "
-                "date_range_used} — all matched shipments."
+                "date_range_used, pagination} — matched shipments for the requested page. When "
+                "pagination.has_more is true, call again with the next page to get the rest."
             ),
             args_schema=FetchRRLogByShipmentInput,
         ),

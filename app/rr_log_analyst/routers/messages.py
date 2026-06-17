@@ -26,8 +26,13 @@ async def send_message(
     authorization: str | None = Header(default=None),
 ):
     token = resolve_token(authorization=authorization)
-    system_prompt = build_system_prompt()
     clickpost_client = getattr(request.app.state, "clickpost_client", None)
+    system_prompt = await build_system_prompt(
+        clickpost_client,
+        token=token,
+        enterprise_id=body.enterprise_id,
+        message_time=body.message_time,
+    )
     runner = AgentRunner(clickpost_client=clickpost_client)
 
     if body.conversation_id:

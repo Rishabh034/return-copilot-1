@@ -15,7 +15,9 @@ _PIPELINE_STAGE_DESCRIPTIONS: dict[str, str] = {
     "3_clickpost_define_and_custom_filters_accounts": "Accounts after matched filter",
     "accounts_after_load_distribution_filter": "Accounts after per-filter load distribution",
     "accounts_after_load_distribution": "Accounts after terminal load distribution",
-    "priority_list_account_names": "Account order before OL / PBA",
+    "priority_list_account_names": "Upstream pool passed to OL (filter pool ∩ serviceable, or all serviceable if no filter)",
+    "4_ordered_list_rules_list": "Ordered List rules evaluated (sequence, has_serviceable_accounts)",
+    "order_list_matched_rule": "Matched Ordered List rule name",
     "4_ordered_list_account_names_filters_applied": "Whether an Ordered List matched",
     "ordered_list_filter_accounts": "Final accounts after OL intersection",
     "5_accounts_after_intelligent_performance_allocation": "Accounts after PBA / intelligent feedback",
@@ -99,6 +101,17 @@ def compact_allocation_summary(log: dict[str, Any]) -> dict[str, Any]:
         }
     if "error" in log:
         summary["error"] = log["error"]
+    filters_ran = log.get("filters_ran") or {}
+    if filters_ran:
+        summary["pipeline_counts"] = {
+            k: len(v)
+            for k, v in {
+                "serviceable_accounts": filters_ran.get("2_serviceable_accounts_filter"),
+                "upstream_pool": filters_ran.get("priority_list_account_names"),
+                "ol_intersection": filters_ran.get("ordered_list_filter_accounts"),
+            }.items()
+            if isinstance(v, list)
+        }
     return {k: v for k, v in summary.items() if v is not None}
 
 

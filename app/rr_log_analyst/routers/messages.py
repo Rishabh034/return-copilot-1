@@ -51,6 +51,7 @@ async def send_message(
                 system_prompt=system_prompt,
                 model=settings.rr_analyst_model,
                 token=token,
+                conversation_id=conversation_id,
             ):
                 if event_type == "done":
                     updated_messages = data.pop("messages", messages)

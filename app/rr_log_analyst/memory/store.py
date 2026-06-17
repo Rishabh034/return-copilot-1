@@ -4,6 +4,7 @@ import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
@@ -124,6 +125,8 @@ class ConversationStore:
 
     def purge_stale(self, max_age: timedelta = timedelta(hours=24)) -> int:
         """Remove conversations not updated within *max_age*. Returns count deleted."""
+        from app.rr_log_analyst.memory.tool_results import tool_result_store
+
         cutoff = datetime.now(timezone.utc) - max_age
         stale_ids = [
             cid
@@ -131,6 +134,7 @@ class ConversationStore:
             if conv.updated_at < cutoff
         ]
         for cid in stale_ids:
+            tool_result_store.purge_conversation(cid)
             del self._conversations[cid]
         return len(stale_ids)
 

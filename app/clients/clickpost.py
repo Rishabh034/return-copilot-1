@@ -15,7 +15,8 @@ logger = logging.getLogger(__name__)
 #   - dashboard/views/... (EnterpriseRecommendationFlowConfig — selector-recs-flow-config)
 #   - dashboard/views/dashboard_selector_view.py (EnterpriseLoadDistribution*ConfigAPI)
 #   - signup/views/account_details.py (CourierPartnerAccountDetailView)
-_RR_LOG_PATH = "/api/v1/clickpost/request_logs"
+_RR_LOG_PATH = "/api/v2/clickpost/request_logs_v2"
+_TRACK_ORDER_SHIPMENT_DETAILS_PATH = "/api/v1/dashboard/track-order-shipment-details/"
 
 _RULES_CONFIG_PATH = "/api/v1/selector-filters-config"
 
@@ -24,6 +25,7 @@ _ACCOUNTS_PATH = "/api/v1/dashboard/courier_accounts"
 _RECOMMENDATION_CONFIG_PATH = "/api/v1/selector-recs-flow-config"
 _RECOMMENDATION_API_PATH = "/api/v1/recommendation_api/"
 _ACTIVITY_LOG_PATH = "/dashboard/api/v1/activity-log"
+_ACTIVE_REPORTS_METADATA_PATH = "/api/v1/reports/active-reports-metadata"
 
 _LOAD_DISTRIBUTION_CONFIG_PATH = "/api/v1/selector-load-distribution-config"
 _LOAD_DISTRIBUTION_REVERSE_CONFIG_PATH = "/api/v1/selector-load-distribution-reverse-config"
@@ -32,6 +34,7 @@ _LOAD_DISTRIBUTION_FILTER_CONFIG_PATH = "/api/v1/dashboard/selector-load-distrib
 # service_id for the Recommendation service (signup.object.enterprise_service
 # EnterpriseServiceConstant.RECOMMENDATION). request_logs is keyed by service.
 _RECOMMENDATION_SERVICE_ID = 3
+_ORDER_CREATION_SERVICE_ID = 1
 
 
 class ClickpostPermissionError(Exception):
@@ -79,7 +82,7 @@ class ClickpostClient:
         url = f"{self._base_url}{path}"
         # Drop None-valued params so we don't send empty query keys.
         clean = {k: v for k, v in params.items() if v is not None}
-        # logger.debug("Clickpost GET %s params=%s", url, clean)
+        logger.debug("Clickpost GET %s params=%s", url, clean)
         # The token authenticates + scopes the request; forward it as-is.
         resp = await self._client.get(
             url,
@@ -172,6 +175,40 @@ class ClickpostClient:
 
     # -- RR logs ------------------------------------------------------------
 
+    async def search_shipment_details(
+        self,
+        token: str,
+        *,
+        awb_list: list[str] | None = None,
+        order_id_list: list[str] | None = None,
+        shipment_registration_start_date_ist: str,
+        shipment_registration_end_date_ist: str,
+        page_number: int = 1,
+        page_size: int = 100,
+    ) -> dict:
+        """Resolve AWB or order_id to shipment metadata (including reference_number).
+
+        Reuses the dashboard track-order shipment-details endpoint.
+        """
+        body: dict[str, Any] = {
+            "request_source": "dashboard",
+            "sort_order": "desc",
+            "sort_by": "shipmentRegisteredDate",
+            "page_number": page_number,
+            "page_size": page_size,
+            "shipment_registration_start_date_ist": shipment_registration_start_date_ist,
+            "shipment_registration_end_date_ist": shipment_registration_end_date_ist,
+        }
+        if awb_list:
+            body["awb_list"] = awb_list
+        if order_id_list:
+            body["order_id_list"] = order_id_list
+        return await self._post(
+            _TRACK_ORDER_SHIPMENT_DETAILS_PATH,
+            json_body=body,
+            token=token,
+        )
+
     async def get_rr_log(self, token: str, reference_number: str) -> dict:
         """Fetch the recommendation/allocation log for a single shipment.
 
@@ -187,7 +224,34 @@ class ClickpostClient:
                 "reference_number": reference_number,
             },
         )
-    
+
+    async def get_order_creation_log(self, token: str, reference_number: str) -> dict:
+        """Fetch the recommendation/allocation log for a single shipment.
+
+        Reuses the request_logs endpoint for the Recommendation service; it
+        returns the stored request/response envelope. Note: this endpoint only
+        retains roughly the last 7 days of logs.
+        """
+        return await self._get(
+            _RR_LOG_PATH,
+            token,
+            {
+                "service_id": _ORDER_CREATION_SERVICE_ID,
+                "reference_number": reference_number,
+            },
+        )
+
+    async def get_enterprise_metadata(self, token: str) -> dict:
+        """List enterprises (id + name) from active-reports-metadata.
+
+        Reuses GET /api/v1/reports/active-reports-metadata?filters=enterprise.
+        """
+        return await self._get(
+            _ACTIVE_REPORTS_METADATA_PATH,
+            token,
+            {"filters": "enterprise"},
+        )
+
     async def get_rr_config(self, token: str) -> dict:
         """Fetch the enterprise's Recommendation Flow Config.
 
@@ -270,16 +334,16 @@ class ClickpostClient:
         end_date: str,
         action_taken: str,
         page_size: int = 100,
+        page: int = 1,
     ) -> Any:
-        """Fetch dashboard activity logs from the analytics service.
-        Callers must keep the range to at most 7 days; the tool layer enforces this.
-        """
+        """Fetch one page of dashboard activity logs (GET /dashboard/api/v1/activity-log)."""
         url = f"{self._base_url}{_ACTIVITY_LOG_PATH}"
         params = {
             "start_date": start_date,
             "end_date": end_date,
             "action_taken": action_taken,
-            "page_size": page_size
+            "page_size": page_size,
+            "page": page,
         }
         logger.debug("Clickpost GET %s params=%s", url, params)
         resp = await self._client.get(url, params=params, headers={"Authorization": f"Token {token}"})

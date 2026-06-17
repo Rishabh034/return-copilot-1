@@ -7,7 +7,9 @@ from app.rr_log_analyst.tools import (
     audit_logs,
     flow_config,
     load_distribution,
+    order_creation_logs,
     recommendation,
+    result_query,
     rr_logs,
     rules,
 )
@@ -18,10 +20,13 @@ _TOOL_MODULES = (
     audit_logs,
     flow_config,
     load_distribution,
+    order_creation_logs,
     recommendation,
+    result_query,
     rr_logs,
     rules,
 )
+
 
 
 def create_tools(context: ToolContext) -> list[BaseTool]:
@@ -30,6 +35,7 @@ def create_tools(context: ToolContext) -> list[BaseTool]:
     for module in _TOOL_MODULES:
         tools.extend(module.build_tools(context))
     return tools
+
 
 
 __all__ = ["ToolContext", "create_tools"]

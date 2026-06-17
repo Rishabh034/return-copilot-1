@@ -10,3 +10,6 @@ class ToolContext:
 
     token: str
     clickpost_client: Any
+    enterprise_user_profile_id: int | None = None
+    enterprise_name: str | None = None
+    conversation_id: str | None = None

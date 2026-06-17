@@ -7,9 +7,12 @@ class Settings(BaseSettings):
     clickpost_base_url: str = "https://internal.clickpost.in"
 
     rr_analyst_model: str = "claude-sonnet-4-6"
-    rr_analyst_max_output_tokens: int = 4096
+    rr_analyst_max_output_tokens: int = 8192
     rr_analyst_max_iterations: int = 10
     rr_analyst_tool_timeout: int = 30
+
+    rr_analyst_thinking_enabled: bool = True
+    rr_analyst_thinking_budget_tokens: int = 2048
 
     rr_analyst_secondary_model: str = "claude-haiku-4-5"
     rr_analyst_secondary_max_output_tokens: int = 8192

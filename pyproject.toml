@@ -13,4 +13,5 @@ dependencies = [
     "langchain-core",
     "httpx",
     "python-dotenv",
+    "slack-sdk",
 ]

@@ -33,3 +33,4 @@ websockets==15.0.1
 sqlalchemy[asyncio]==2.0.41
 asyncpg==0.30.0
 alembic==1.16.1
+slack-sdk>=3.27.0

@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     max_context_tokens: int = 200_000
     reserved_output_tokens: int = 16384
     protected_tail_messages: int = 4
+    allowed_origins: str = "https://alerts.clickpost.in"  # comma-separated list of allowed CORS origins
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

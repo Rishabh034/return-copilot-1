@@ -65,14 +65,14 @@ def to_display_messages(messages: list[BaseMessage]) -> list[dict[str, str | Non
         elif isinstance(message, AIMessage):
             message_time = _message_time(message)
             thinking = _extract_thinking(message.content)
-            if thinking:
-                display.append(
-                    {
-                        "role": "thinking",
-                        "content": thinking,
-                        "message_time": message_time,
-                    }
-                )
+            # if thinking:
+            #     display.append(
+            #         {
+            #             "role": "thinking",
+            #             "content": thinking,
+            #             "message_time": message_time,
+            #         }
+            #     )
             text = _extract_text(message.content)
             if text:
                 display.append(
@@ -80,6 +80,7 @@ def to_display_messages(messages: list[BaseMessage]) -> list[dict[str, str | Non
                         "role": "assistant",
                         "content": text,
                         "message_time": message_time,
+                        "reasoning": thinking if thinking else None,
                     }
                 )
         # ToolMessage and SystemMessage are internal — not shown in the chat UI.

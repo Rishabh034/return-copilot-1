@@ -80,6 +80,7 @@ async def send_message(
             ):
                 if event_type == "done":
                     updated_messages = data.pop("messages", messages)
+                    thinking  = updated_messages[-1].content[0].get("thinking")
                     _stamp_missing_message_time(updated_messages)
                     conversation_store.save(conversation_id, token, updated_messages)
                     response_stats = messages_storage_stats(updated_messages)
@@ -112,6 +113,7 @@ async def send_message(
                         "conversation_id": conversation_id,
                         "usage": data.get("usage"),
                         "usage_by_iteration": data.get("usage_by_iteration"),
+                        "reasoning": thinking,
                     }
                 yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
         except Exception as e:

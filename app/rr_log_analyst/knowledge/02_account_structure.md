@@ -35,10 +35,19 @@ e.g. Delhivery_Maratahalli(Delhivery(1005979))
 
 ## Key Principles
 
+### Two layers of account identity
+
+| Layer | Identifier | Where it's used |
+|-------|------------|-----------------|
+| **External (API-facing)** | CPID + Account Code | Order Creation API, Recommendation `preference_array` — these are the identifiers brands pass and receive |
+| **Internal (Clickpost system)** | Account ID | All settings storage — credentials, serviceability, pricing, SLA, filter/OL rules — are keyed on Account ID |
+
+The Account Code is the human-readable contract name (e.g. `Delhivery_Maratahalli`). The Account ID is Clickpost's internal integer key for that same account. Externally you reference an account by its code; internally everything is resolved to its ID.
+
 ### Clickpost operates at Account level, not CPID level
-- CPID is the carrier grouping; rules, serviceability, blacklists, and allocation decisions are made at the **Account ID** level
+- CPID is the carrier grouping; rules, serviceability, blacklists, and allocation decisions are all at the **Account** level
 - **Exception:** ODA is stored per CPID — an ODA pincode removes all accounts under that carrier
-- Saying "use Delhivery" is meaningless to Clickpost rules — it needs a specific Account ID
+- Saying "use Delhivery" is not enough — a specific account (CPID + account code) must be resolved
 
 ### One CPID → Multiple Accounts
 A carrier (CPID) can offer multiple services, each represented as a separate account:
@@ -103,8 +112,9 @@ Account (Account ID)
 
 ---
 
-## Account ID in the Allocation API
+## How Identifiers Are Used Across APIs
 
+### Filter and Ordered List rules (internal)
 The `account_list` in Filter and Ordered List rules uses **Account IDs** (integers):
 
 ```json
@@ -113,7 +123,26 @@ The `account_list` in Filter and Ordered List rules uses **Account IDs** (intege
 }
 ```
 
-These are Account IDs, not CPIDs. Each integer maps to one specific carrier account (one service, one contract).
+These are Account IDs, not CPIDs. Each integer maps to one specific carrier account.
+
+### Recommendation API — output
+The `preference_array` returned by RecsV2 includes both **CPID and account code** for each ranked carrier:
+
+```json
+{
+  "cp_id": 4,
+  "account_code": "Delhivery_Maratahalli",
+  "account_id": 1005979,
+  ...
+}
+```
+
+The brand uses `cp_id` + `account_code` from this response directly in the Order Creation API.
+
+### Order Creation API — input
+Takes **CPID + account code** to identify the carrier account. Clickpost resolves the account internally (by account ID) to fetch credentials and hits the carrier's API with those credentials.
+
+**Important:** Order Creation has no integration with the serviceability module. Passing any valid CPID + account code will attempt order creation with that carrier regardless of whether the drop pincode is serviceable for that account. Serviceability filtering is the responsibility of the Recommendation flow.
 
 ---
 
@@ -130,7 +159,8 @@ https://dashboard.clickpost.ai/settings/courier/integrations/<cpid>/account/<acc
 
 ## Summary
 
-| Level | Identifier | Clickpost Uses? | Can Configure? |
-|-------|------------|----------------|----------------|
-| Carrier | CPID | Grouping + ODA marking only | ODA (scan-driven) |
-| Account | Account ID | Yes — rules, serviceability, allocation | Yes — serviceability, pricing, SLA |
+| Level | Identifier | Used Where |
+|-------|------------|------------|
+| Carrier | CPID | Carrier grouping; ODA marking; API input alongside account code |
+| Account (external) | Account Code | Order Creation API input; Recommendation `preference_array` output |
+| Account (internal) | Account ID | Credentials, serviceability, pricing, SLA storage; Filter/OL `account_list` |

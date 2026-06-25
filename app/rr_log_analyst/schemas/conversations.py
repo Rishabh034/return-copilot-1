@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field
 class DisplayMessage(BaseModel):
     role: str
     content: str
+    message_time: str | None = None
+    reasoning: str | None = None
 
 
 class ConversationCreateResponse(BaseModel):

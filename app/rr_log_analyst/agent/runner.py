@@ -69,7 +69,6 @@ _FRIENDLY_TOOL_LABELS: dict[str, str] = {
     "get_account_info": "Looking up delivery company accounts",
     "summarize_accounts": "Reviewing the accounts",
     "search_accounts": "Searching the accounts",
-    "resolve_enterprise": "Finding the account",
 }
 
 
@@ -85,6 +84,18 @@ def _extract_text_delta(chunk_content: str | list) -> str | None:
             block.get("text", "")
             for block in chunk_content
             if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        joined = "".join(parts)
+        return joined or None
+    return None
+
+
+def _extract_thinking_delta(chunk_content: str | list) -> str | None:
+    if isinstance(chunk_content, list):
+        parts = [
+            block.get("thinking", "")
+            for block in chunk_content
+            if isinstance(block, dict) and block.get("type") == "thinking"
         ]
         joined = "".join(parts)
         return joined or None
@@ -322,6 +333,9 @@ class AgentRunner:
 
             try:
                 async for chunk in runnable.astream(llm_input):
+                    thinking_delta = _extract_thinking_delta(chunk.content)
+                    if thinking_delta:
+                        yield ("thinking_delta", {"delta": thinking_delta})
                     text_delta = _extract_text_delta(chunk.content)
                     if text_delta:
                         yield ("text_delta", {"delta": text_delta})

@@ -2,6 +2,8 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -19,6 +21,7 @@ logging.basicConfig(
 
 _CLEANUP_INTERVAL_SECONDS = 3600  # run every hour
 
+_ALLOWED_ORIGINS = settings.allowed_origins
 logger = logging.getLogger(__name__)
 
 
@@ -54,7 +57,7 @@ def create_app() -> FastAPI:
 
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=_ALLOWED_ORIGINS.split(","),
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],

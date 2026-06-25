@@ -34,13 +34,9 @@
 
 **AWB / order_id lookup:** `fetch_rr_log_by_shipment` tries the **last 90 days** when the user does not give `start_date` / `end_date`. If no shipment is found, the tool returns `needs_date_range: true` — ask the user for the shipment registration window and retry with both dates.
 
-### Enterprise lookup
+### Enterprise context
 
-| Question | PRIMARY |
-|----------|---------|
-| Which enterprise / what is enterprise_id? | `resolve_enterprise` — pass `name=` to search or `enterprise_user_profile_id=` to look up by ID |
-
-Fetches the full catalog internally via active-reports-metadata but **only returns regex matches** — never the full list.
+The enterprise you are assisting (name + `enterprise_user_profile_id`) and the current message time are injected into the **## Context** section of the system prompt. Use those directly — there is no enterprise lookup tool.
 
 ### Rules
 

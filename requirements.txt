@@ -28,3 +28,8 @@ uvicorn==0.48.0
 uvloop==0.22.1
 watchfiles==1.2.0
 websockets==15.0.1
+# sqlalchemy[asyncio] for async support and asyncpg 
+# is actual async postgres driver and almebic is migration tool
+sqlalchemy[asyncio]==2.0.41
+asyncpg==0.30.0
+alembic==1.16.1

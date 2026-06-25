@@ -18,6 +18,7 @@ from app.rr_log_analyst.memory import (
 from app.rr_log_analyst.memory.store import utc_now_iso_ms
 from app.rr_log_analyst.schemas.messages import SendMessageRequest
 from app.config import settings
+from app.rr_log_analyst.memory.store import _extract_thinking
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,7 @@ async def send_message(
             ):
                 if event_type == "done":
                     updated_messages = data.pop("messages", messages)
-                    thinking  = updated_messages[-1].content[0].get("thinking")
+                    thinking  = _extract_thinking(updated_messages[-1].content) if updated_messages else None
                     _stamp_missing_message_time(updated_messages)
                     conversation_store.save(conversation_id, token, updated_messages)
                     response_stats = messages_storage_stats(updated_messages)

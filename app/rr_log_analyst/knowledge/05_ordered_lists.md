@@ -17,18 +17,14 @@ Pre-filter checks (serviceable accounts)
         ↓
   upstream pool (matched filter's pool, or all serviceable accounts if no filter matched)
         ↓
-  upstream pool (matched filter's pool, or all serviceable accounts if no filter matched)
-        ↓
   Ordered List       ← THIS LAYER
         ↓
-  Final Allocation (or PBA if OL produced nothing)
   Final Allocation (or PBA if OL produced nothing)
 ```
 
 ## Key Behaviours
 - Conditions within a rule are evaluated with **AND logic** — every condition must pass
 - Rules are evaluated in **priority order** — lowest number first
-- **First matching rule wins** — evaluation stops, remaining rules are skipped (unless rule iteration is enabled and the matched rule has no serviceable accounts)
 - **First matching rule wins** — evaluation stops, remaining rules are skipped (unless rule iteration is enabled and the matched rule has no serviceable accounts)
 - `account_list` is an **ordered priority list** — P1 (index 0) is highest priority
 - Final allocation = OL carriers filtered to only those present in the upstream pool, in OL's order
@@ -39,7 +35,6 @@ Pre-filter checks (serviceable accounts)
 
 ## Intersection Logic
 ```python
-final_carriers = [c for c in OL.account_list if c in upstream_pool]
 final_carriers = [c for c in OL.account_list if c in upstream_pool]
 ```
 OL's priority order is preserved. The upstream pool (`priority_list_account_names`) is the filter's serviceable accounts, or all serviceable accounts when no filter matched.
@@ -119,11 +114,7 @@ Identical structure, field list, and operators to Filter condition objects — s
 1. OL **can** fire without a filter match — it then intersects with all serviceable accounts
 2. Carriers in OL not present in the upstream pool are **silently dropped**
 3. If the intersection is empty → falls through to PBA over the upstream pool (default behavior); not necessarily "no allocation"
-1. OL **can** fire without a filter match — it then intersects with all serviceable accounts
-2. Carriers in OL not present in the upstream pool are **silently dropped**
-3. If the intersection is empty → falls through to PBA over the upstream pool (default behavior); not necessarily "no allocation"
 4. `value` is always sent as a **string** regardless of `value_type`
 5. `field_name`, `field_type`, `field_value` are legacy — always send `null`, `""`, `null`
 6. Most common OL conditions are `pickup_pincode IN` + `drop_pincode IN` for route-based routing
-7. RR log keys: `order_list_matched_rule` (matched rule name), `4_ordered_list_rules_list` (matched rules with `sequence`/`has_serviceable_accounts`), `4_ordered_list_account_names_filters_applied` (whether an OL matched), `ordered_list_filter_accounts` (final intersection)
 7. RR log keys: `order_list_matched_rule` (matched rule name), `4_ordered_list_rules_list` (matched rules with `sequence`/`has_serviceable_accounts`), `4_ordered_list_account_names_filters_applied` (whether an OL matched), `ordered_list_filter_accounts` (final intersection)

@@ -1,22 +1,50 @@
 import asyncio
 import logging
+import uuid
 from contextlib import asynccontextmanager
-
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.clients.clickpost import ClickpostClient
 from app.config import settings
 from app.exceptions import AppError, app_error_handler
+from app.logging_config import setup_logging
+from app.request_context import request_id_var
 from app.routers import rr_log_analyst_router
 from app.rr_log_analyst.memory.store import conversation_store
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-)
+setup_logging()
+
+
+class RequestIdMiddleware:
+    """
+    assigns a unique id to every request and injects in contextvar same as MDC in java.
+    in this way request id will be added to each log line in our request and we can just grep request id 
+    to get complete flow.
+    also this is complete async middleware so it can be easily integrated in our sse streaming.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers", []))
+        request_id = headers.get(b"x-request-id", b"").decode() or str(uuid.uuid4())
+        request_id_var.set(request_id)
+
+        async def send_with_header(message: dict) -> None:
+            if message["type"] == "http.response.start":
+                extra = [(b"x-request-id", request_id.encode())]
+                message = {**message, "headers": list(message.get("headers", [])) + extra}
+            await send(message)
+
+        await self.app(scope, receive, send_with_header)
 
 
 _CLEANUP_INTERVAL_SECONDS = 3600  # run every hour
@@ -55,6 +83,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    application.add_middleware(RequestIdMiddleware)
     application.add_middleware(
         CORSMiddleware,
         allow_origins=_ALLOWED_ORIGINS.split(","),

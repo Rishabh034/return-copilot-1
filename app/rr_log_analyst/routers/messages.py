@@ -88,12 +88,13 @@ async def send_message(
                     store_stats = conversation_store.storage_stats()
                     token_stats = conversation_store.storage_stats_for_token(token)
                     logger.info(
-                        "Request cycle storage conversation_id=%s "
+                        "Request cycle storage enterprise_id=%d conversation_id=%s "
                         "req_messages=%d req_bytes=%d req_roles=%s "
                         "resp_messages=%d resp_bytes=%d resp_roles=%s delta_bytes=%+d "
                         "store_conversations=%d store_messages=%d store_bytes=%d "
                         "token_conversations=%d token_messages=%d token_bytes=%d "
                         "usage=%s",
+                        body.enterprise_id,
                         conversation_id,
                         request_stats["message_count"],
                         request_stats["storage_bytes"],

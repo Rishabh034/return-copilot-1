@@ -66,7 +66,7 @@ When a filter matched with `has_serviceable_accounts: false`, upstream is `[]`, 
 - **Filter** removes accounts; **Ordered List** ranks what remains; **PBA** ranks when no OL order exists
 - **Blacklist** = exclusion filter; **Whitelist** = inclusion filter
 - Engine behavior flags come from `EnterpriseRecommendationFlowConfig` (per enterprise, optionally per merchant): `filters`, `ordered_list`, `oda_filter`, `recs`, `return_serviceable_accounts`, `intelligent_feedback`, `iterate_through_rules_filters`, `iterate_through_rules_ordered_list`, `load_distribution*`, `recency_bias`, `use_rto_model`, etc.
-- Engine behavior flags come from `EnterpriseRecommendationFlowConfig` (per enterprise, optionally per merchant): `filters`, `ordered_list`, `oda_filter`, `recs`, `return_serviceable_accounts`, `intelligent_feedback`, `iterate_through_rules_filters`, `iterate_through_rules_ordered_list`, `load_distribution*`, `recency_bias`, `use_rto_model`, etc.
+
 
 ### What the RR Log Contains
 - `filters_ran` → ordered pipeline trace. Keys are prefixed by stage: `1_*` (active/threshold/blacklist), `2_*` (serviceability/ODA/caps), `3_*` (filter rules), `4_*` (ordered lists), `5_*` (PBA/scoring). Accounts appear as `{account_code}({carrier_name}({account_id}))`, e.g. `Delhivery_Maratahalli(Delhivery(1005979))`.

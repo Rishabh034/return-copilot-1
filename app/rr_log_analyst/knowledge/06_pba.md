@@ -28,17 +28,7 @@ If OL produced a non-empty list, PBA does not run — OL's order is terminal.
   Filter Rules
         ↓
   upstream pool ("priority_list_account_names")
-  upstream pool ("priority_list_account_names")
         ↓
-  ┌────────────────────────────────────────────┐
-  │  OL produced non-empty list?               │
-  │                                            │
-  │  YES → OL × pool intersection              │
-  │        → TERMINAL (final allocation)       │
-  │                                            │
-  │  NO  → PBA ranks the upstream pool         │
-  │        → TERMINAL (final allocation)       │
-  └────────────────────────────────────────────┘
   ┌────────────────────────────────────────────┐
   │  OL produced non-empty list?               │
   │                                            │

@@ -16,14 +16,6 @@ from app.rr_log_analyst.tools.allocation_views import (
     extract_ranking,
     search_courier_in_allocation,
 )
-from app.rr_log_analyst.tools._common import FILTERS_RAN_KEYS, shape_allocation_result, shape_user_request
-from app.rr_log_analyst.tools.allocation_views import (
-    compact_allocation_summary,
-    extract_order,
-    extract_pipeline,
-    extract_ranking,
-    search_courier_in_allocation,
-)
 from app.rr_log_analyst.tools.context import ToolContext
 
 _IST = ZoneInfo("Asia/Kolkata")
@@ -135,8 +127,8 @@ class FetchRRLogByShipmentInput(BaseModel):
         ge=1,
         description=(
             "1-indexed page of track-order shipment results. A date-range lookup can match "
-            "more shipments than fit on one page; the response reports pagination.has_more — "
-            "call again with the next page to fetch the rest."
+            "more shipments than fit on one page; the response reports pagination.has_more "
+            "and pagination.next_page_number — call again with that page to fetch the rest."
         ),
     )
     page_size: int = Field(
@@ -257,40 +249,38 @@ def _extract_shipments_from_track_order_response(raw: Any) -> list[dict[str, Any
     return [s for s in shipments if isinstance(s, dict)]
 
 
+
+def _has_next_page(raw: Any) -> bool | None:
+    """Read results.has_next_page from a track-order shipment-details response."""
+    if not isinstance(raw, dict):
+        return None
+    results = raw.get("results")
+    if not isinstance(results, dict):
+        return None
+    has_next = results.get("has_next_page")
+    if isinstance(has_next, bool):
+        return has_next
+    if has_next in (1, 0):
+        return bool(has_next)
+    return None
+
+
 def _build_pagination(
     *,
     page: int,
     page_size: int,
     returned: int,
-    total_count: int | None,
+    has_more: bool,
 ) -> dict[str, Any]:
     pagination: dict[str, Any] = {
         "page": page,
         "page_size": page_size,
         "returned": returned,
-        "total_count": total_count,
+        "has_more": has_more,
     }
-    if total_count is not None:
-        pagination["has_more"] = page * page_size < total_count
-        pagination["total_pages"] = (total_count + page_size - 1) // page_size
-    else:
-        # No total in the response — infer there may be more when the page is full.
-        pagination["has_more"] = returned >= page_size
+    if has_more:
+        pagination["next_page_number"] = page + 1
     return pagination
-
-
-def _extract_total_count(raw: Any) -> int | None:
-    """Pull the total matched-shipment count from a track-order response, if present."""
-    if not isinstance(raw, dict):
-        return None
-    for container in (raw.get("results"), raw):
-        if not isinstance(container, dict):
-            continue
-        for key in ("total_count", "totalCount", "total", "count"):
-            val = container.get(key)
-            if isinstance(val, int):
-                return val
-    return None
 
 
 def _shape_shipment(shipment: dict[str, Any], reference_number: str) -> dict[str, Any]:
@@ -381,12 +371,14 @@ async def _resolve_reference_number(
         return {"error": str(e), "awb": awb, "order_id": order_id}
 
     shipments = _extract_shipments_from_track_order_response(raw)
-    total_count = _extract_total_count(raw)
+    has_more = _has_next_page(raw)
+    if has_more is None:
+        has_more = len(shipments) >= page_size
     pagination = _build_pagination(
         page=page,
         page_size=page_size,
         returned=len(shipments),
-        total_count=total_count,
+        has_more=has_more,
     )
     if not shipments:
         # An empty page beyond the first just means we ran past the last page —
@@ -622,66 +614,10 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
                 return await _load_rr_log(context, ref)
             except Exception as e:
                 return {"reference_number": ref, "error": str(e)}
-        async def _one(ref: str) -> dict:
-            try:
-                return await _load_rr_log(context, ref)
-            except Exception as e:
-                return {"reference_number": ref, "error": str(e)}
 
         logs = await asyncio.gather(*[_one(r) for r in refs])
         return {"count": len(logs), "logs": list(logs)}
-        logs = await asyncio.gather(*[_one(r) for r in refs])
-        return {"count": len(logs), "logs": list(logs)}
 
-    async def summarize_rr_log(reference_number: str) -> dict[str, Any]:
-        log = await _load_rr_log(context, reference_number)
-        return compact_allocation_summary(log)
-
-    async def get_rr_log_order(reference_number: str) -> dict[str, Any]:
-        log = await _load_rr_log(context, reference_number)
-        return extract_order(log)
-
-    async def get_rr_log_pipeline(
-        reference_number: str,
-        stage: PipelineStage,
-        account_id: int | None = None,
-        cp_name: str = "",
-    ) -> dict[str, Any]:
-        log = await _load_rr_log(context, reference_number)
-        return extract_pipeline(log, stage, account_id=account_id, cp_name=cp_name)
-
-    async def get_rr_log_ranking(
-        reference_number: str,
-        account_id: int | None = None,
-        cp_name: str = "",
-        limit: int = 5,
-    ) -> dict[str, Any]:
-        log = await _load_rr_log(context, reference_number)
-        return extract_ranking(log, account_id=account_id, cp_name=cp_name, limit=limit)
-
-    async def search_rr_log_courier(
-        reference_number: str,
-        account_id: int | None = None,
-        cp_name: str = "",
-    ) -> dict[str, Any]:
-        log = await _load_rr_log(context, reference_number)
-        return search_courier_in_allocation(log, account_id=account_id, cp_name=cp_name)
-
-    async def summarize_rr_logs_batch(reference_numbers: list[str]) -> dict[str, Any]:
-        refs = [str(r).strip() for r in reference_numbers if str(r).strip()]
-        if not refs:
-            return {"error": "reference_numbers must contain at least one value"}
-
-        async def _one(ref: str) -> dict:
-            try:
-                return compact_allocation_summary(await _load_rr_log(context, ref))
-            except Exception as e:
-                return {"reference_number": ref, "error": str(e)}
-
-        summaries = await asyncio.gather(*[_one(r) for r in refs])
-        return {"count": len(summaries), "summaries": list(summaries)}
-
-    _stages_hint = ", ".join(FILTERS_RAN_KEYS)
     async def summarize_rr_log(reference_number: str) -> dict[str, Any]:
         log = await _load_rr_log(context, reference_number)
         return compact_allocation_summary(log)
@@ -745,7 +681,8 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
                 "and retry with the same awb or order_id plus start_date and end_date. "
                 "Returns {count, date_range_used, pagination, results:[{reference_number, shipment, "
                 "rr_log}]} — one entry per matched shipment. Date-range lookups can match more than "
-                "one page; when pagination.has_more is true, call again with the next page."
+                "one page; when pagination.has_more is true, call again with "
+                "pagination.next_page_number."
             ),
             args_schema=FetchRRLogByShipmentInput,
         ),
@@ -759,7 +696,7 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
                 "are omitted; returns needs_date_range=true if not found so you can ask the user "
                 "for a wider window. Returns {count, shipments:[...], reference_numbers:[...], "
                 "date_range_used, pagination} — matched shipments for the requested page. When "
-                "pagination.has_more is true, call again with the next page to get the rest."
+                "pagination.has_more is true, call again with pagination.next_page_number."
             ),
             args_schema=FetchRRLogByShipmentInput,
         ),

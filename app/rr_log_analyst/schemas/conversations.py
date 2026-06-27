@@ -10,6 +10,11 @@ class DisplayMessage(BaseModel):
     reasoning: str | None = None
 
 
+class ConversationCreateRequest(BaseModel):
+    user_id: int = Field(..., description="Clickpost dashboard user id")
+    enterprise_id: int = Field(..., description="Clickpost enterprise id")
+
+
 class ConversationCreateResponse(BaseModel):
     id: str
     created_at: datetime

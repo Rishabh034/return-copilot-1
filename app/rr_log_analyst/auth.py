@@ -18,3 +18,15 @@ def resolve_token(
         status_code=401,
         detail="Missing token. Provide Authorization: Token <token> or a token in the request body.",
     )
+
+
+def resolve_user_id(user_id: int) -> int:
+    if user_id <= 0:
+        raise HTTPException(status_code=400, detail="Invalid user_id")
+    return user_id
+
+
+def resolve_enterprise_id(enterprise_id: int) -> int:
+    if enterprise_id <= 0:
+        raise HTTPException(status_code=400, detail="Invalid enterprise_id")
+    return enterprise_id

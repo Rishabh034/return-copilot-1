@@ -94,10 +94,22 @@ def hydrate_tool_results_from_rows(
         tool_result_store.put(conversation_id, stored_tool_result_from_dict(payload))
 
 
+def build_partial_ai_message(text: str) -> AIMessage:
+    """A text-only assistant message for a stopped/disconnected turn.
+
+    Display-only: it carries no tool_use or thinking blocks, so it never
+    produces a dangling tool_use when reconstructed. Persisted with
+    status='partial' and excluded from the replay history.
+    """
+    return AIMessage(content=text)
+
+
 def message_to_row(
     conversation_id: uuid.UUID,
     seq: int,
     message: BaseMessage,
+    *,
+    status: str = "complete",
 ) -> Message:
     conversation_key = str(conversation_id)
     tool_call_id: str | None = None
@@ -129,6 +141,7 @@ def message_to_row(
         conversation_id=conversation_id,
         seq=seq,
         role=role,
+        status=status,
         content=_text_content(message.content),
         tool_call_id=tool_call_id,
         tool_name=tool_name,

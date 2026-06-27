@@ -75,25 +75,44 @@ class ConversationRepository:
         return list(result.scalars().all())
 
     async def load_messages(self, conversation_id: uuid.UUID) -> list[BaseMessage]:
+        """Replay history for the agent loop: completed, balanced turns only.
+
+        Partial rows (a stopped/disconnected turn's text) are excluded so the
+        history handed to the model never contains a dangling tool_use.
+        """
         result = await self._session.execute(
             select(Message)
-            .where(Message.conversation_id == conversation_id)
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.status == "complete",
+            )
             .order_by(Message.seq)
         )
         return rows_to_messages(list(result.scalars().all()), conversation_id=str(conversation_id))
 
-    async def save_messages(
+    async def next_seq(self, conversation_id: uuid.UUID) -> int:
+        """Next append position — one past the current max seq (0 if empty)."""
+        current_max = await self._session.scalar(
+            select(func.max(Message.seq)).where(
+                Message.conversation_id == conversation_id
+            )
+        )
+        return 0 if current_max is None else current_max + 1
+
+    async def append_message(
         self,
         conversation: Conversation,
-        messages: list[BaseMessage],
-    ) -> None:
-        await self._session.execute(
-            delete(Message).where(Message.conversation_id == conversation.id)
-        )
-        for seq, message in enumerate(messages):
-            self._session.add(message_to_row(conversation.id, seq, message))
+        *,
+        seq: int,
+        message: BaseMessage,
+        status: str = "complete",
+    ) -> Message:
+        """Append a single message row (append-only — never rewrites history)."""
+        row = message_to_row(conversation.id, seq, message, status=status)
+        self._session.add(row)
         conversation.updated_at = datetime.now(timezone.utc)
         await self._session.flush()
+        return row
 
     async def purge_stale(self, max_age: timedelta = timedelta(hours=24)) -> int:
         from app.rr_log_analyst.memory.tool_results import tool_result_store

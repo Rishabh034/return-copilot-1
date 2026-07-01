@@ -36,4 +36,44 @@ class ToolResultStore:
         self._results.pop(conversation_id, None)
 
 
+def stored_tool_result_to_dict(stored: StoredToolResult) -> dict[str, Any]:
+    return {
+        "tool_call_id": stored.tool_call_id,
+        "tool_name": stored.tool_name,
+        "args": stored.args,
+        "result": stored.result,
+        "scratchpad": stored.scratchpad,
+        "scratchpad_batches": list(stored.scratchpad_batches),
+        "raw_data_parts": list(stored.raw_data_parts),
+        "created_at": stored.created_at.isoformat(),
+    }
+
+
+def stored_tool_result_from_dict(data: dict[str, Any]) -> StoredToolResult:
+    created_at_raw = data.get("created_at")
+    if isinstance(created_at_raw, str):
+        created_at = datetime.fromisoformat(created_at_raw.replace("Z", "+00:00"))
+    elif isinstance(created_at_raw, datetime):
+        created_at = created_at_raw
+    else:
+        created_at = datetime.now(timezone.utc)
+
+    return StoredToolResult(
+        tool_call_id=str(data["tool_call_id"]),
+        tool_name=str(data.get("tool_name") or ""),
+        args=data.get("args") if isinstance(data.get("args"), dict) else {},
+        result=data.get("result") if isinstance(data.get("result"), dict) else {},
+        scratchpad=str(data.get("scratchpad") or ""),
+        scratchpad_batches=[
+            batch
+            for batch in (data.get("scratchpad_batches") or [])
+            if isinstance(batch, str)
+        ],
+        raw_data_parts=[
+            part for part in (data.get("raw_data_parts") or []) if isinstance(part, str)
+        ],
+        created_at=created_at,
+    )
+
+
 tool_result_store = ToolResultStore()

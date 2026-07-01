@@ -369,10 +369,13 @@ class AgentRunner:
 
             if not accumulated.tool_calls:
                 messages.append(ai_message)
+                # Final assistant turn — persist it, then close the stream.
+                # Messages are persisted incrementally via message_complete, so
+                # "done" no longer carries the full list.
+                yield ("message_complete", {"message": ai_message})
                 yield (
                     "done",
                     {
-                        "messages": messages,
                         "usage": total_usage,
                         "usage_by_iteration": usage_by_iteration,
                         "secondary_usage": secondary_usage,
@@ -381,6 +384,9 @@ class AgentRunner:
                 return
 
             messages.append(ai_message)
+            # Assistant turn carrying tool_use blocks. Persisted together with
+            # its ToolMessage(s) below so the replay history stays balanced.
+            yield ("message_complete", {"message": ai_message})
 
             # Phase 1: invoke all tools (sequential — tools may have side effects)
             tool_invocations: list[tuple[str, str, dict, dict, list[str]]] = []
@@ -489,13 +495,13 @@ class AgentRunner:
                     raw_data_parts=raw_data_parts,
                     use_scratchpad=use_scratchpad,
                 )
-                messages.append(
-                    ToolMessage(
-                        content=tool_message_content,
-                        tool_call_id=tool_id,
-                        name=tool_name,
-                    )
+                tool_message = ToolMessage(
+                    content=tool_message_content,
+                    tool_call_id=tool_id,
+                    name=tool_name,
                 )
+                messages.append(tool_message)
+                yield ("message_complete", {"message": tool_message})
 
                 summary = _summarize_result(tool_name, result)
                 yield (

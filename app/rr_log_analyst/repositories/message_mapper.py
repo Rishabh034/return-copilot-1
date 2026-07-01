@@ -160,7 +160,13 @@ def rows_to_messages(
     if conversation_id:
         hydrate_tool_results_from_rows(rows, conversation_id=conversation_id)
 
-    payloads = [row.raw_response for row in rows if row.raw_response]
-    if not payloads:
+    rows_with_payload = [row for row in rows if row.raw_response]
+    if not rows_with_payload:
         return []
-    return messages_from_dict(payloads)
+    messages = messages_from_dict([row.raw_response for row in rows_with_payload])
+    # seq is a column, not part of the serialized message — stamp it back onto the
+    # reconstructed message (same channel as message_time) so the display layer can
+    # expose a per-turn anchor for feedback.
+    for row, message in zip(rows_with_payload, messages):
+        message.additional_kwargs["seq"] = row.seq
+    return messages

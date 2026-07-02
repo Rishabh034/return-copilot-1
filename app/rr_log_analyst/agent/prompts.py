@@ -80,21 +80,6 @@ def _load_knowledge_files() -> str:
     return "\n\n".join(sections)
 
 
-def _find_enterprise_name(raw: Any, enterprise_id: int) -> str | None:
-    """Pick the enterprise name for enterprise_id out of active-reports-metadata."""
-    if not isinstance(raw, dict):
-        return None
-    result = raw.get("result")
-    if not isinstance(result, dict):
-        return None
-    enterprises = result.get("enterprises")
-    if not isinstance(enterprises, list):
-        return None
-    for entry in enterprises:
-        if isinstance(entry, dict) and entry.get("id") == enterprise_id:
-            name = entry.get("name")
-            return str(name) if name else None
-    return None
 
 
 async def build_system_prompt(
@@ -103,17 +88,10 @@ async def build_system_prompt(
     token: str | None = None,
     enterprise_id: int | None = None,
     message_time: str | None = None,
+    enterprise_name: str | None = None,
+    username: str | None = None,
 ) -> str:
     parts = [_ROLE_PREAMBLE, "", _load_knowledge_files()]
-
-    enterprise_name: str | None = None
-    if clickpost_client is not None and token and enterprise_id is not None:
-        try:
-            metadata = await clickpost_client.get_enterprise_metadata(token=token)
-            enterprise_name = _find_enterprise_name(metadata, enterprise_id)
-            logger.info(f"Enterprise name: {enterprise_name}")
-        except Exception:
-            logger.exception("Failed to fetch enterprise metadata for system prompt")
 
     context_lines: list[str] = []
     if enterprise_id is not None:
@@ -128,7 +106,8 @@ async def build_system_prompt(
             )
     if message_time:
         context_lines.append(f"- Current message time: **{message_time}**.")
-
+    if username:
+        context_lines.append(f"- User: **{username}**.")
     if context_lines:
         parts.append("\n## Context\n\n" + "\n".join(context_lines))
 

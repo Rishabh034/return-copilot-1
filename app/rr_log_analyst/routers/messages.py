@@ -21,6 +21,7 @@ from app.rr_log_analyst.memory.store import _extract_thinking, utc_now_iso_ms
 from app.rr_log_analyst.repositories import ConversationRepository
 from app.rr_log_analyst.repositories.message_mapper import build_partial_ai_message
 from app.rr_log_analyst.schemas.messages import SendMessageRequest
+from app.rr_log_analyst.services.title import generate_conversation_title
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -85,11 +86,15 @@ async def send_message(
     enterprise_id = resolve_enterprise_id(body.enterprise_id)
     token = resolve_token(authorization=authorization)
     clickpost_client = getattr(request.app.state, "clickpost_client", None)
+    enterprise_name = body.enterprise_name if body.enterprise_name else None
+    username = body.username if body.username else None
     system_prompt = await build_system_prompt(
         clickpost_client,
         token=token,
         enterprise_id=enterprise_id,
         message_time=body.message_time,
+        enterprise_name = enterprise_name,
+        username = username,
     )
     runner = AgentRunner(clickpost_client=clickpost_client)
 
@@ -127,6 +132,7 @@ async def send_message(
             repo = ConversationRepository(session)
             partial_buffer = ""  # accumulates text_delta for the in-flight turn
             last_ai_message: AIMessage | None = None
+            last_ai_seq: int | None = None  # row seq of the final assistant turn
 
             # Create-or-attach the conversation and persist the user's message
             # immediately, so a stopped turn always leaves a resumable history.
@@ -164,11 +170,12 @@ async def send_message(
                         message = data["message"]
                         _stamp_message_time(message)
                         await repo.append_message(conversation, seq=seq, message=message)
+                        if isinstance(message, AIMessage):
+                            last_ai_message = message
+                            last_ai_seq = seq  # anchor feedback to this row's seq
                         seq += 1
                         await session.commit()
                         partial_buffer = ""  # this turn finalized cleanly
-                        if isinstance(message, AIMessage):
-                            last_ai_message = message
                         continue
 
                     if event_type == "text_delta":
@@ -185,6 +192,10 @@ async def send_message(
                             "usage": data.get("usage"),
                             "usage_by_iteration": data.get("usage_by_iteration"),
                             "reasoning": thinking,
+                            # The final assistant message's own row seq — matches the
+                            # seq replayed via GET /conversations/{id}, so feedback
+                            # keyed by (conversation_id, seq) lines up either way.
+                            "seq": last_ai_seq,
                         }
                         logger.info(
                             "Request cycle done conversation_id=%s user_id=%s "
@@ -197,6 +208,24 @@ async def send_message(
                         )
 
                     yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+                # First exchange on a fresh conversation — title it from the
+                # opening user/assistant turn with a small Haiku call. Runs after
+                # the answer has fully streamed, so it never delays the response;
+                # best-effort, so a failure leaves the conversation untitled.
+                if is_new_conversation and last_ai_message is not None:
+                    title = await generate_conversation_title(
+                        user_message=human_message.content,
+                        ai_message=last_ai_message.content,
+                    )
+                    if title:
+                        conversation.title = title
+                        await session.commit()
+                        logger.info(
+                            "Set conversation title conversation_id=%s title=%r",
+                            conversation_id,
+                            title,
+                        )
             except asyncio.CancelledError:
                 # Client stopped / disconnected mid-stream. Persist whatever
                 # assistant text streamed so far as a display-only partial row

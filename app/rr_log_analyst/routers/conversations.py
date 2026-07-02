@@ -83,6 +83,7 @@ async def list_conversations(
                 created_at=conversation.created_at,
                 updated_at=conversation.updated_at,
                 message_count=len(display_messages),
+                title=conversation.title,
                 preview=preview,
             )
         )
@@ -122,5 +123,6 @@ async def get_conversation(
         id=str(conversation.id),
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
+        title=conversation.title,
         messages=display_messages,
     )

@@ -8,6 +8,7 @@ class DisplayMessage(BaseModel):
     content: str
     message_time: str | None = None
     reasoning: str | None = None
+    seq: int | None = None
 
 
 class ConversationCreateRequest(BaseModel):
@@ -25,6 +26,7 @@ class ConversationSummary(BaseModel):
     created_at: datetime
     updated_at: datetime
     message_count: int
+    title: str | None = None
     preview: str | None = None
 
 
@@ -32,4 +34,5 @@ class ConversationDetail(BaseModel):
     id: str
     created_at: datetime
     updated_at: datetime
+    title: str | None = None
     messages: list[DisplayMessage] = Field(default_factory=list)

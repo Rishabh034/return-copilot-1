@@ -48,16 +48,21 @@ def _message_time(message: BaseMessage) -> str | None:
     return ts if isinstance(ts, str) else None
 
 
-def to_display_messages(messages: list[BaseMessage]) -> list[dict[str, str | None]]:
+def to_display_messages(messages: list[BaseMessage]) -> list[dict[str, Any]]:
     """Collapse LangChain messages to simple user/assistant pairs for the API and UI."""
-    display: list[dict[str, str | None]] = []
+    display: list[dict[str, Any]] = []
 
     for message in messages:
         if isinstance(message, HumanMessage):
             text = _extract_text(message.content)
             if text:
                 display.append(
-                    {"role": "user", "content": text, "message_time": _message_time(message)}
+                    {
+                        "role": "user",
+                        "content": text,
+                        "message_time": _message_time(message),
+                        "seq": message.additional_kwargs.get("seq"),
+                    }
                 )
         elif isinstance(message, AIMessage):
             message_time = _message_time(message)
@@ -70,6 +75,7 @@ def to_display_messages(messages: list[BaseMessage]) -> list[dict[str, str | Non
                         "content": text,
                         "message_time": message_time,
                         "reasoning": thinking if thinking else None,
+                        "seq": message.additional_kwargs.get("seq"),
                     }
                 )
         # ToolMessage and SystemMessage are internal — not shown in the chat UI.

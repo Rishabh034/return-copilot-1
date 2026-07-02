@@ -21,6 +21,7 @@ _TRACK_ORDER_SHIPMENT_DETAILS_PATH = "/api/v1/dashboard/track-order-shipment-det
 _RULES_CONFIG_PATH = "/api/v1/selector-filters-config"
 
 _ACCOUNTS_PATH = "/api/v1/dashboard/courier_accounts"
+_COURIER_PARTNERS_PATH = "/api/v1/dashboard/courier_partners/"
 
 _RECOMMENDATION_CONFIG_PATH = "/api/v1/selector-recs-flow-config"
 _RECOMMENDATION_API_PATH = "/api/v1/recommendation_api/"
@@ -296,6 +297,10 @@ class ClickpostClient:
             token,
             {},
         )
+
+    async def list_courier_partners(self, token: str) -> Any:
+        """List all courier partners (global CP catalog with name, cpId, country, type)."""
+        return await self._get(_COURIER_PARTNERS_PATH, token, {})
 
     # -- load distribution --------------------------------------------------
 

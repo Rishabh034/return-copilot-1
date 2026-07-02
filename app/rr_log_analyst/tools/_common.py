@@ -12,7 +12,7 @@ def as_list(raw: Any) -> list:
     if isinstance(raw, list):
         return raw
     if isinstance(raw, dict):
-        for key in ("results", "data", "rules", "accounts", "result"):
+        for key in ("results", "data", "dataList", "rules", "accounts", "result"):
             val = raw.get(key)
             if isinstance(val, list):
                 return val

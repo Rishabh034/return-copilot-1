@@ -69,6 +69,8 @@ _FRIENDLY_TOOL_LABELS: dict[str, str] = {
     "get_account_info": "Looking up delivery company accounts",
     "summarize_accounts": "Reviewing the accounts",
     "search_accounts": "Searching the accounts",
+    "lookup_courier_partner": "Looking up the delivery company",
+    "search_courier_partners": "Searching delivery companies",
 }
 
 

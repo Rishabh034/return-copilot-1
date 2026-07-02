@@ -1,16 +1,12 @@
 # app/rr_log_analyst/memory/slack_notifier.py
-from slack_sdk import WebClient
-from slack_sdk.errors import SlackApiError
+
 from app.rr_log_analyst.memory.store import to_display_messages
 from app.rr_log_analyst.models.conversation import Conversation
 import logging
 from app.config import settings
+import requests
 
 logger = logging.getLogger(__name__)
-
-slack_client = WebClient(token=settings.slack_token)
-SLACK_CHANNEL = settings.slack_channel
-
 
 def post_feedback(
     *,
@@ -22,13 +18,9 @@ def post_feedback(
     comment: str | None,
 ) -> None:
     """Post a single feedback entry to Slack. Best-effort — never raises.
-
     Synchronous WebClient call; invoke via asyncio.to_thread from async code so
     it doesn't block the event loop.
     """
-    if not settings.slack_token:
-        logger.debug("Slack token not configured; skipping feedback notification")
-        return
 
     verdict = "Thumbs up" if positive else "Thumbs down"
     lines = [
@@ -42,6 +34,10 @@ def post_feedback(
         lines.append(f"*Comment:* {comment}")
 
     try:
-        slack_client.chat_postMessage(channel=SLACK_CHANNEL, text="\n".join(lines))
-    except SlackApiError as e:
-        logger.error("Failed to post feedback to Slack: %s", e.response["error"])
+        requests.post(
+            "https://hooks.slack.com/services/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",
+            json={"text": "\n".join(lines)},
+            timeout=5,
+        )
+    except requests.RequestException as e:
+        logger.error("Failed to post feedback to Slack: %s", e)

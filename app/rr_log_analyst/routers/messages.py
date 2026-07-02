@@ -86,11 +86,15 @@ async def send_message(
     enterprise_id = resolve_enterprise_id(body.enterprise_id)
     token = resolve_token(authorization=authorization)
     clickpost_client = getattr(request.app.state, "clickpost_client", None)
+    enterprise_name = body.enterprise_name if body.enterprise_name else None
+    username = body.username if body.username else None
     system_prompt = await build_system_prompt(
         clickpost_client,
         token=token,
         enterprise_id=enterprise_id,
         message_time=body.message_time,
+        enterprise_name = enterprise_name,
+        username = username,
     )
     runner = AgentRunner(clickpost_client=clickpost_client)
 

@@ -9,9 +9,9 @@ from app.clients.llm import create_secondary_chat_model
 logger = logging.getLogger(__name__)
 
 _TITLE_SYSTEM_PROMPT = (
-    "You generate a short, descriptive title for a support conversation. "
+    "You are clickhelp, a helpful assistant. Generate a short, descriptive title for a conversation. "
     "Respond with the title only — no quotes, no punctuation at the end, "
-    "no more than 6 words. Capture what the user is asking about."
+    "no more than 6 words. Capture what the user is asking about. and use only user message to generate the title. "
 )
 
 _MAX_TITLE_CHARS = 120
@@ -34,7 +34,6 @@ def _coerce_text(content: str | list) -> str:
 async def generate_conversation_title(
     *,
     user_message: str | list,
-    ai_message: str | list,
 ) -> str | None:
     """Make a small Haiku call to title a conversation from its first exchange.
 
@@ -42,14 +41,12 @@ async def generate_conversation_title(
     a title rather than surface an error.
     """
     user_text = _coerce_text(user_message).strip()
-    ai_text = _coerce_text(ai_message).strip()
     if not user_text:
         return None
 
     prompt = (
         "Title this conversation based on its opening exchange.\n\n"
-        f"User:\n{user_text[:2000]}\n\n"
-        f"Assistant:\n{ai_text[:2000]}"
+        f"User:\n{user_text[:2000]}\n"
     )
 
     try:

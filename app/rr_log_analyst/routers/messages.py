@@ -155,6 +155,19 @@ async def send_message(
             await repo.append_message(conversation, seq=seq, message=human_message)
             seq += 1
             await session.commit()
+            
+            if is_new_conversation:
+                    title = await generate_conversation_title(
+                        user_message=human_message.content
+                    )
+                    if title:
+                        conversation.title = title
+                        await session.commit()
+                        logger.info(
+                            "Set conversation title conversation_id=%s title=%r",
+                            conversation_id,
+                            title,
+                        )
 
             try:
                 async for event_type, data in runner.handle_message_stream(
@@ -213,19 +226,7 @@ async def send_message(
                 # opening user/assistant turn with a small Haiku call. Runs after
                 # the answer has fully streamed, so it never delays the response;
                 # best-effort, so a failure leaves the conversation untitled.
-                if is_new_conversation and last_ai_message is not None:
-                    title = await generate_conversation_title(
-                        user_message=human_message.content,
-                        ai_message=last_ai_message.content,
-                    )
-                    if title:
-                        conversation.title = title
-                        await session.commit()
-                        logger.info(
-                            "Set conversation title conversation_id=%s title=%r",
-                            conversation_id,
-                            title,
-                        )
+                
             except asyncio.CancelledError:
                 # Client stopped / disconnected mid-stream. Persist whatever
                 # assistant text streamed so far as a display-only partial row

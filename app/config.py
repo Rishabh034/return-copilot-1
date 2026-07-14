@@ -31,6 +31,18 @@ class Settings(BaseSettings):
     slack_channel: str = "clickhelp-conversations"
     allowed_origins: str = "https://alerts.clickpost.in"  # comma-separated list of allowed CORS origins
 
+    # Log shipping: write logs to hourly-rotated files and upload them to S3.
+    # Off by default so local dev stays stdout-only; set LOG_TO_FILE=true in .env
+    # on the server. AWS credentials come from boto3's default chain
+    # (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION env vars,
+    # or the EC2 instance role).
+    log_to_file: bool = False
+    log_dir: str = "logs"
+    log_s3_bucket: str = "clickpost-ai-agent-recom-clickhelp-logs"
+    log_s3_prefix: str = "logs/clickpost-ai-projects"
+    log_upload_interval_minutes: int = 10
+    capture_access_logs: bool = True  # route uvicorn access/server logs through our logger
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 

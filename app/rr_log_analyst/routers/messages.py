@@ -32,8 +32,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-CUTOFF  = datetime.now().date() > datetime(2026, 7, 15).date()  # Cutoff date for internal user ID requirement
-
 async def _settle_user_tokens(
     *,
     user_id: int,
@@ -79,6 +77,8 @@ async def _persist_partial(
     *,
     user_id: int,
     enterprise_id: int,
+    internal_user_id: str | None,
+    is_internal_user: bool,
     text: str,
 ) -> None:
     """Append a display-only partial assistant row in its own session.
@@ -90,7 +90,11 @@ async def _persist_partial(
         async with AsyncSessionLocal() as session:
             repo = ConversationRepository(session)
             conversation = await repo.get_owned(
-                conversation_id, user_id=user_id, enterprise_id=enterprise_id
+                conversation_id,
+                user_id=user_id,
+                enterprise_id=enterprise_id,
+                internal_user_id=internal_user_id,
+                is_internal_user=is_internal_user,
             )
             if conversation is None:
                 return
@@ -138,7 +142,7 @@ async def send_message(
     if not is_internal_user:
         internal_user_id = None
 
-    if is_internal_user and CUTOFF and internal_user_id is None:
+    if is_internal_user and internal_user_id is None:
         raise BadRequestError("Internal user ID is required")
 
     async with AsyncSessionLocal() as session:
@@ -415,6 +419,8 @@ async def send_message(
                             uuid.UUID(conversation_id),
                             user_id=user_id,
                             enterprise_id=enterprise_id,
+                            internal_user_id=internal_user_id,
+                            is_internal_user=is_internal_user,
                             text=text,
                         )
                     )

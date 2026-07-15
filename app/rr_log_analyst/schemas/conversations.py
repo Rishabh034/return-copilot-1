@@ -45,7 +45,7 @@ class ConversationCreateRequest(BaseModel):
     user_id: int = Field(..., description="Clickpost dashboard user id")
     enterprise_id: int = Field(..., description="Clickpost enterprise id")
     internal_user_id :str | None = Field(None, description="Clickpost internal user id")
-    is_internal_user: bool = Field(..., description="Is the user an internal user") 
+    is_internal_user: bool = Field(False, description="Is the user an internal user")
 
 
 class ConversationCreateResponse(BaseModel):

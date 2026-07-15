@@ -7,6 +7,9 @@ services:
     volumes:
       # keeps not-yet-uploaded log files alive across container restarts
       - ./logs:/home/ubuntu/clickpost-ai-projects/logs
+      # local dev: expose host `aws configure` credentials to boto3 inside the
+      # container. On EC2 this dir is empty/absent and boto3 uses the instance role.
+      - ~/.aws:/root/.aws:ro
     depends_on:
       db:
         condition: service_healthy

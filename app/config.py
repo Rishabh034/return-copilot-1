@@ -1,4 +1,30 @@
+import os
+
 from pydantic_settings import BaseSettings
+
+from app.utilities.creds import aws_secrets
+
+# Seed the environment with values fetched from AWS Secrets Manager so
+# BaseSettings can read them. The secrets are shared account-wide, so only
+# take this app's CLICKHELP_-prefixed keys and strip the prefix to map them
+# onto the Settings fields / env var names below. setdefault-style check keeps
+# real env vars and .env (loaded via load_dotenv in creds) as overrides.
+_from_aws = []
+_from_env = []
+for _key, _value in aws_secrets.items():
+    if not _key.startswith("CLICKHELP_"):
+        continue
+    _target = _key.removeprefix("CLICKHELP_")
+    if _target not in os.environ:
+        os.environ[_target] = str(_value)
+        _from_aws.append(_target)
+    else:
+        _from_env.append(_target)
+
+if _from_aws:
+    print(f"[CREDS] using AWS Secrets Manager values for: {sorted(_from_aws)}")
+if _from_env:
+    print(f"[CREDS] env/.env overrides AWS values for: {sorted(_from_env)}")
 
 
 class Settings(BaseSettings):

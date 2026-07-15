@@ -110,6 +110,4 @@ def get_secret(secret_name, region_name="ap-south-1"):
         response["SecretString"]
     )
 
-    print(f"Successfully fetched secret={secret_name} from region={region_name}")
-
     return secret_dict

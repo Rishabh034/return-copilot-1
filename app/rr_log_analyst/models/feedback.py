@@ -32,6 +32,10 @@ class Feedback(Base):
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
     user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     enterprise_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    internal_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_internal_user: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="true"
+    )
     positive: Mapped[bool] = mapped_column(Boolean, nullable=False)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

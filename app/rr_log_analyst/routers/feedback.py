@@ -10,6 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.dependencies.auth import resolve_identity
 from app.exceptions import NotFoundError
+from app.rr_log_analyst.auth import (
+    resolve_internal_user_id,
+    resolve_is_internal_user,
+)
 from app.rr_log_analyst.memory.slack_notifier import post_feedback
 from app.rr_log_analyst.repositories import ConversationRepository
 from app.rr_log_analyst.repositories.feedback_repo import FeedbackRepository
@@ -41,6 +45,8 @@ async def submit_feedback(
     session: AsyncSession = Depends(get_db),
 ):
     user_id, enterprise_id, _ = identity
+    internal_user_id = resolve_internal_user_id(body.internal_user_id)
+    is_internal_user = resolve_is_internal_user(body.is_internal_user)
 
     # Ownership + existence check: only accept feedback on a conversation the
     # caller actually owns. seq is stored as an opaque turn anchor.
@@ -49,6 +55,8 @@ async def submit_feedback(
         uuid.UUID(body.conversation_id),
         user_id=user_id,
         enterprise_id=enterprise_id,
+        internal_user_id=internal_user_id,
+        is_internal_user=is_internal_user,
     )
     if conversation is None:
         raise NotFoundError("Conversation not found")
@@ -61,6 +69,8 @@ async def submit_feedback(
         enterprise_id=enterprise_id,
         positive=body.positive,
         comment=body.comment,
+        internal_user_id=internal_user_id,
+        is_internal_user=is_internal_user,
     )
     await session.commit()
 
@@ -81,8 +91,9 @@ async def submit_feedback(
         user_id=user_id,
         positive=body.positive,
         comment=body.comment,
+        is_internal_user=is_internal_user,
+        internal_user_id=internal_user_id,
     )
-
     return FeedbackResponse(
         id=str(feedback.id),
         conversation_id=str(feedback.conversation_id),
@@ -90,4 +101,6 @@ async def submit_feedback(
         positive=feedback.positive,
         comment=feedback.comment,
         created_at=feedback.created_at,
+        is_internal_user=feedback.is_internal_user,
+        internal_user_id=feedback.internal_user_id,
     )

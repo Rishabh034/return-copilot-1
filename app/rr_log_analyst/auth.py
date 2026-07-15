@@ -30,3 +30,13 @@ def resolve_enterprise_id(enterprise_id: int) -> int:
     if enterprise_id <= 0:
         raise HTTPException(status_code=400, detail="Invalid enterprise_id")
     return enterprise_id
+
+def resolve_internal_user_id(internal_user_id: str | None) -> str | None:
+    if internal_user_id is not None and not internal_user_id.strip():
+        raise HTTPException(status_code=400, detail="Invalid internal_user_id")
+    return internal_user_id.strip() if internal_user_id else None
+
+def resolve_is_internal_user(is_internal_user: bool) -> bool:
+    if not isinstance(is_internal_user, bool):
+        raise HTTPException(status_code=400, detail="Invalid is_internal_user value")
+    return is_internal_user

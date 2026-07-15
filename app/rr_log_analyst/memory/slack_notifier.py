@@ -16,6 +16,8 @@ def post_feedback(
     user_id: int,
     positive: bool,
     comment: str | None,
+    is_internal_user: bool = False,
+    internal_user_id: str | None = None,
 ) -> None:
     """Post a single feedback entry to Slack. Best-effort — never raises.
     Synchronous WebClient call; invoke via asyncio.to_thread from async code so
@@ -33,6 +35,9 @@ def post_feedback(
     if comment:
         lines.append(f"*Comment:* {comment}")
 
+    if is_internal_user:
+        lines.append(f"*Internal User ID:* `{internal_user_id}`")
+        lines.append(f"*Internal User:* `{is_internal_user}`")  
     try:
         requests.post(
             "https://hooks.slack.com/services/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",

@@ -23,11 +23,15 @@ class ConversationRepository:
         user_id: int,
         enterprise_id: int,
         conversation_id: uuid.UUID | None = None,
+        internal_user_id: str | None = None,
+        is_internal_user: bool = False,
     ) -> Conversation:
         conversation = Conversation(
             id=conversation_id or uuid.uuid4(),
             user_id=user_id,
             enterprise_id=enterprise_id,
+            internal_user_id=internal_user_id,
+            is_internal_user=is_internal_user,
         )
         self._session.add(conversation)
         await self._session.flush()
@@ -39,6 +43,8 @@ class ConversationRepository:
         *,
         user_id: int,
         enterprise_id: int,
+        internal_user_id: str | None = None,
+        is_internal_user: bool = False,
     ) -> Conversation | None:
         result = await self._session.execute(
             select(Conversation)
@@ -46,6 +52,8 @@ class ConversationRepository:
                 Conversation.id == conversation_id,
                 Conversation.user_id == user_id,
                 Conversation.enterprise_id == enterprise_id,
+                Conversation.internal_user_id == internal_user_id,
+                Conversation.is_internal_user == is_internal_user,
             )
             .options(selectinload(Conversation.messages))
         )
@@ -62,12 +70,16 @@ class ConversationRepository:
         *,
         user_id: int,
         enterprise_id: int,
+        internal_user_id: str | None = None,
+        is_internal_user: bool = False,
     ) -> list[Conversation]:
         result = await self._session.execute(
             select(Conversation)
             .where(
                 Conversation.user_id == user_id,
                 Conversation.enterprise_id == enterprise_id,
+                Conversation.internal_user_id == internal_user_id,
+                Conversation.is_internal_user == is_internal_user,
             )
             .options(selectinload(Conversation.messages))
             .order_by(Conversation.updated_at.desc())
@@ -151,6 +163,8 @@ class ConversationRepository:
         *,
         user_id: int,
         enterprise_id: int,
+        internal_user_id: str | None = None,
+        is_internal_user: bool = False,
     ) -> dict[str, int]:
         conversation_count = await self._session.scalar(
             select(func.count())
@@ -158,6 +172,8 @@ class ConversationRepository:
             .where(
                 Conversation.user_id == user_id,
                 Conversation.enterprise_id == enterprise_id,
+                Conversation.internal_user_id == internal_user_id,
+                Conversation.is_internal_user == is_internal_user,
             )
         )
         message_count = await self._session.scalar(
@@ -167,6 +183,8 @@ class ConversationRepository:
             .where(
                 Conversation.user_id == user_id,
                 Conversation.enterprise_id == enterprise_id,
+                Conversation.internal_user_id == internal_user_id,
+                Conversation.is_internal_user == is_internal_user,
             )
         )
         return {

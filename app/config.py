@@ -1,4 +1,30 @@
+import os
+
 from pydantic_settings import BaseSettings
+
+from app.utilities.creds import aws_secrets
+
+# Seed the environment with values fetched from AWS Secrets Manager so
+# BaseSettings can read them. The secrets are shared account-wide, so only
+# take this app's CLICKHELP_-prefixed keys and strip the prefix to map them
+# onto the Settings fields / env var names below. setdefault-style check keeps
+# real env vars and .env (loaded via load_dotenv in creds) as overrides.
+_from_aws = []
+_from_env = []
+for _key, _value in aws_secrets.items():
+    if not _key.startswith("CLICKHELP_"):
+        continue
+    _target = _key.removeprefix("CLICKHELP_")
+    if _target not in os.environ:
+        os.environ[_target] = str(_value)
+        _from_aws.append(_target)
+    else:
+        _from_env.append(_target)
+
+if _from_aws:
+    print(f"[CREDS] using AWS Secrets Manager values for: {sorted(_from_aws)}")
+if _from_env:
+    print(f"[CREDS] env/.env overrides AWS values for: {sorted(_from_env)}")
 
 
 class Settings(BaseSettings):
@@ -30,6 +56,18 @@ class Settings(BaseSettings):
     slack_token: str | None = None
     slack_channel: str = "clickhelp-conversations"
     allowed_origins: str = "https://alerts.clickpost.in"  # comma-separated list of allowed CORS origins
+
+    # Log shipping: write logs to hourly-rotated files and upload them to S3.
+    # Off by default so local dev stays stdout-only; set LOG_TO_FILE=true in .env
+    # on the server. AWS credentials come from boto3's default chain
+    # (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION env vars,
+    # or the EC2 instance role).
+    log_to_file: bool = False
+    log_dir: str = "logs"
+    log_s3_bucket: str = "clickpost-ai-agent-recom-clickhelp-logs"
+    log_s3_prefix: str = "logs/clickpost-ai-projects"
+    log_upload_interval_minutes: int = 10
+    capture_access_logs: bool = True  # route uvicorn access/server logs through our logger
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

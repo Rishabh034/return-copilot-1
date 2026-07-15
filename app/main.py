@@ -10,6 +10,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from app.clients.clickpost import ClickpostClient
 from app.config import settings
 from app.exceptions import AppError, app_error_handler
+from app.log_uploader import S3LogUploader
 from app.logging_config import setup_logging
 from app.request_context import request_id_var
 from app.routers import rr_log_analyst_router
@@ -56,10 +57,17 @@ async def lifespan(app: FastAPI):
         base_url=settings.clickpost_base_url,
         timeout=settings.rr_analyst_tool_timeout,
     )
+    log_uploader = None
+    if settings.log_to_file:
+        log_uploader = S3LogUploader()
+        log_uploader.start()
     try:
         yield
     finally:
         await app.state.clickpost_client.aclose()
+        if log_uploader:
+            # last so shutdown logs from the lines above still make the flush
+            await log_uploader.aclose()
 
 
 def create_app() -> FastAPI:

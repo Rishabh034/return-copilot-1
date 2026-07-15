@@ -14,23 +14,16 @@ aws_secrets = {}
 
 for secret_name in ["DB_CREDS", "ACCESS_KEYS", "API_KEYS"]:
     try:
-        fetched = get_secret(secret_name)
-        aws_secrets.update(fetched)
-        print(f"[CREDS] secret={secret_name}: fetched {len(fetched)} keys")
+        aws_secrets.update(get_secret(secret_name))
     except Exception as e:
         print(f"[CREDS] secret={secret_name}: FETCH FAILED reason={type(e).__name__}")
 
-if aws_secrets:
-    _clickhelp_keys = sorted(k for k in aws_secrets if k.startswith("CLICKHELP_"))
-    print(f"[CREDS] AWS Secrets Manager loaded {len(aws_secrets)} keys total; CLICKHELP keys: {_clickhelp_keys}")
-else:
+if not aws_secrets:
     print("[CREDS] AWS Secrets Manager loaded nothing; relying on env/.env only")
 
 _missing = [k for k in REQUIRED_AWS_KEYS if k not in aws_secrets]
 if _missing:
     print(f"[CREDS] WARNING: required keys not found in AWS Secrets Manager: {_missing}; app will break if they are also absent from env/.env")
-else:
-    print(f"[CREDS] all required keys present in AWS Secrets Manager: {REQUIRED_AWS_KEYS}")
 
 
 def get_credential(key):

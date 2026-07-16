@@ -71,6 +71,8 @@ _FRIENDLY_TOOL_LABELS: dict[str, str] = {
     "search_accounts": "Searching the accounts",
     "lookup_courier_partner": "Looking up the delivery company",
     "search_courier_partners": "Searching delivery companies",
+    "check_pincode_serviceability": "Checking pincode serviceability",
+    "check_route_serviceability": "Checking route serviceability",
 }
 
 
@@ -151,6 +153,25 @@ def _summarize_result(tool_name: str, result: dict) -> str:
         if count:
             return f"Found {count} recent change(s) made to the settings"
         return "No setting changes found for this time period"
+
+    if "pickup_count" in result and "drop_count" in result:
+        route_count = result.get("count", 0)
+        if result.get("serviceable") is True:
+            return "This account is serviceable for the pickup-to-drop route"
+        if result.get("serviceable") is False:
+            return "This account is not serviceable for the pickup-to-drop route"
+        return (
+            f"Found {route_count} account(s) serviceable on both pickup and drop "
+            f"({result['pickup_count']} pickup, {result['drop_count']} drop)"
+        )
+
+    if "is_pickup_pincode" in result and "pincode" in result:
+        side = "pickup" if result["is_pickup_pincode"] else "drop"
+        if result.get("serviceable") is True:
+            return f"This account is serviceable for the {side} pincode"
+        if result.get("serviceable") is False:
+            return f"This account is not serviceable for the {side} pincode"
+        return f"Found {result.get('count', 0)} account(s) for {side} pincode {result['pincode']}"
 
     if "count" in result and "summaries" in result:
         return f"Reviewed {result['count']} shipments"

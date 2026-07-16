@@ -54,11 +54,33 @@ The enterprise you are assisting (name + `enterprise_user_profile_id`) and the c
 | Pipeline toggles | `get_enterprise_flow_config` | `get_flow_config_flag(flag=...)` |
 | LD targets | `get_load_distribution_config` | pass `account_id` to filter one carrier |
 
+### Serviceability
+
+**Always use the serviceability tools for any serviceability question.** Do **not** use `run_recommendation` / `summarize_recommendation` / `get_recommendation_pipeline` to answer serviceability — those simulate full allocation (filters, OL, PBA) and are the wrong tool when the user only asks which accounts can serve a pincode or route.
+
+| Question / phrasing | PRIMARY | Notes |
+|---------------------|---------|-------|
+| "Serviceable accounts for pickup X → drop Y" | `check_route_serviceability` | Pass `pickup_pincode` + `drop_pincode`; omit account filters to list all |
+| "Is this route / lane / pincode pair serviceable?" | `check_route_serviceability` | Same — return `accounts` from the tool |
+| "Is account X serviceable for this route?" | `check_route_serviceability` | Add `account_type_id` (preferred) or `account_name` + `courier_partner` |
+| "Why was account X dropped at `2_serviceable_accounts_filter`?" | `check_route_serviceability` | Then compare to RR log `filters_ran.2_serviceable_accounts_filter` |
+| "Is drop / pickup pincode Z serviceable?" | `check_pincode_serviceability` | Set `is_pickup_pincode` false for drop, true for pickup |
+| COD vs PREPAID on a route | `check_route_serviceability` | Pass `order_type=COD` or `PREPAID` |
+| RVP / reverse on a route | `check_route_serviceability` | Pass `is_rvp=true` |
+
+**Route vs single pincode:** `check_route_serviceability` calls the API twice (pickup + drop). Pickup is treated as an account-id set; for shared accounts, **all drop order_types** are kept (so COD from drop is included even when pickup only listed PREPAID). Use `check_pincode_serviceability` only when one end of the route is asked about.
+
+**Filters:** Prefer `account_type_id` from the RR log over `account_name` (many accounts share generic names like `"1"` / `"test"`). When any filter is set, the response includes `serviceable: true/false`.
+
+**Anti-pattern:** User asks for serviceable accounts on a pickup→drop pair → agent calls `run_recommendation` → wrong. Call `check_route_serviceability` instead.
+
+See `14_serviceability_tools.md` for full mapping, RR-log reconciliation, and dashboard links.
+
 ### Simulation & accounts
 
 | Question | PRIMARY | SUB-TOOLs if needed |
 |----------|---------|---------------------|
-| Simulate allocation | `run_recommendation` | `summarize_recommendation`, `get_recommendation_pipeline` |
+| Simulate **full** allocation (filters / OL / PBA ranking) | `run_recommendation` | `summarize_recommendation`, `get_recommendation_pipeline` — **not** for serviceability-only questions |
 | Account lookup | `get_account_info` | `summarize_accounts`, `search_accounts` |
 
 ### Order creation logs

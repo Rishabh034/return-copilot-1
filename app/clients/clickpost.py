@@ -32,6 +32,9 @@ _LOAD_DISTRIBUTION_CONFIG_PATH = "/api/v1/selector-load-distribution-config"
 _LOAD_DISTRIBUTION_REVERSE_CONFIG_PATH = "/api/v1/selector-load-distribution-reverse-config"
 _LOAD_DISTRIBUTION_FILTER_CONFIG_PATH = "/api/v1/dashboard/selector-load-distribution-v2-config"
 
+_CHECK_SERVICEABILITY_PATH = "/api/v1/pincode_search_overall"
+
+
 # service_id for the Recommendation service (signup.object.enterprise_service
 # EnterpriseServiceConstant.RECOMMENDATION). request_logs is keyed by service.
 _RECOMMENDATION_SERVICE_ID = 3
@@ -380,3 +383,21 @@ class ClickpostClient:
                 message = meta.get("message") or data.get("error") or "Clickpost request failed"
                 raise ClickpostAPIError(f"Clickpost activity-log: {message}")
         return data
+
+
+    # -- serviceability ------------------------------------------------------
+    
+    async def check_serviceability(self, token: str, pincode: str, is_pickup_pincode: bool, is_rvp: bool) -> Any:
+        """Check serviceability for a given pincode."""
+        
+        params = {
+            "pincode": pincode,
+            "is_pickup_pincode": is_pickup_pincode,
+            "is_rvp": is_rvp
+        }
+        
+        return await self._get(
+            _CHECK_SERVICEABILITY_PATH,
+            token,
+            params,
+        )

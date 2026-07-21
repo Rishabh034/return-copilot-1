@@ -64,6 +64,7 @@ Dashboard → Settings → Courier → Integrations → [Enterprise] → Account
 - Serviceability must be **uploaded** into the system per account
 - Configured per `orderType` (PREPAID, COD, etc.)
 - Accounts without serviceability for the given pincode/order type are dropped before filters run
+- To verify serviceability live, use `check_route_serviceability` (pickup + drop intersection) or `check_pincode_serviceability` (one side only) — see `14_serviceability_tools.md`
 - Blacklisting is **brand-configured** per carrier account + pincode + order type — manual setup, not scan-driven (unlike ODA)
 - A handful of enterprises skip serviceability entirely (hard-coded in `recsv2.py`)
 

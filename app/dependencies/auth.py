@@ -27,13 +27,9 @@ async def require_auth(
 ) -> AuthContext:
     """Verify a JWT minted by clickpost's POST /api/v1/ai-agent/token/.
 
-    Verification is a pure signature + claims check (RS256, public key only —
+    Verification is a pure signature + claims check (RS256, public key only -
     this service can never mint a token, only clickpost holds the private
-    key). No DB or network call, so it's cheap on every request. A valid
-    signature is proof clickpost's own auth already accepted this user;
-    user_id/enterprise_id below come from the signed claims, not the caller.
-
-    Not yet wired into routers — see settings.agent_jwt_enabled.
+    key).
     """
     if not settings.agent_jwt_public_key:
         raise HTTPException(

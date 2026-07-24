@@ -5,11 +5,12 @@ import json
 import logging
 import uuid
 
-from fastapi import APIRouter, Header, Request
+from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from app.db import AsyncSessionLocal
+from app.dependencies.auth import require_auth
 from app.exceptions import NotFoundError
 from app.rr_log_analyst.agent import AgentRunner, build_system_prompt
 from app.rr_log_analyst.auth import (
@@ -76,15 +77,33 @@ async def _persist_partial(
         )
 
 
+async def _resolve_identity(
+    body: SendMessageRequest,
+    authorization: str | None = Header(default=None),
+) -> tuple[int, int, str]:
+    """Returns (user_id, enterprise_id, cp_token) for this request.
+
+    switches on settings.agent_jwt_enabled:
+    - True:  identity comes from a verified clickpost-minted JWT
+    - False: for local testing 
+    """
+    if settings.agent_jwt_enabled:
+        ctx = await require_auth(authorization=authorization)
+        return ctx.user_id, ctx.enterprise_id, ctx.cp_token
+
+    user_id = resolve_user_id(body.user_id)
+    enterprise_id = resolve_enterprise_id(body.enterprise_id)
+    token = resolve_token(authorization=authorization)
+    return user_id, enterprise_id, token
+
+
 @router.post("/messages/")
 async def send_message(
     body: SendMessageRequest,
     request: Request,
-    authorization: str | None = Header(default=None),
+    identity: tuple[int, int, str] = Depends(_resolve_identity),
 ):
-    user_id = resolve_user_id(body.user_id)
-    enterprise_id = resolve_enterprise_id(body.enterprise_id)
-    token = resolve_token(authorization=authorization)
+    user_id, enterprise_id, token = identity
     clickpost_client = getattr(request.app.state, "clickpost_client", None)
     enterprise_name = body.enterprise_name if body.enterprise_name else None
     username = body.username if body.username else None

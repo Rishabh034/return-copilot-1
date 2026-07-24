@@ -1,5 +1,6 @@
 import os
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 from app.utilities.creds import aws_secrets
@@ -15,7 +16,9 @@ for _key, _value in aws_secrets.items():
     if not _key.startswith("CLICKHELP_"):
         continue
     _target = _key.removeprefix("CLICKHELP_")
-    if _target not in os.environ:
+    # empty env values (e.g. a leftover `DATABASE_URL=` line in .env) count
+    # as unset — never let them mask a real value from Secrets Manager
+    if not os.environ.get(_target):
         os.environ[_target] = str(_value)
         _from_aws.append(_target)
     else:
@@ -49,6 +52,24 @@ class Settings(BaseSettings):
     tool_result_query_max_chars: int = 8_000
 
     rr_analyst_dev_token: str | None = None
+
+    # Agent JWT verification (RS256): tokens are minted by clickpost Django
+    # (POST /api/v1/ai-agent/token/, behind its own DRF auth) and carry
+    # user_id/enterprise_id/cp_token as signed claims. we only ever hold
+    # the public half of the key pair - this service can verify a token but
+    # never mint one. See app/dependencies/auth.py::require_auth.
+    # false for local testing
+    agent_jwt_enabled: bool = False
+    agent_jwt_public_key: str | None = None  # PEM-encoded RSA public key
+    agent_jwt_issuer: str = "clickpost"
+    agent_jwt_audience: str = "clickpost-ai-agent"
+
+    @field_validator("agent_jwt_public_key")
+    @classmethod
+    def _unescape_pem_newlines(cls, v: str | None) -> str | None:
+        # Some secret stores/`.env` files can't hold real newlines, so the PEM
+        # is flattened to a single line with literal `\n` — reverse that here.
+        return v.replace("\\n", "\n") if v else v
 
     max_context_tokens: int = 200_000
     reserved_output_tokens: int = 16384

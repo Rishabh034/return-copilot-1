@@ -23,8 +23,10 @@ sudo docker compose build app
 # alembic is used as migration tool and run will start a fresh container as new image and 
 # --rm will remove it immediately after it exists just to test if there are any errors in migration files if there are
 # any error our script will exit and old container will keep on serving traffic, else we continue to next steps.
+# --no-deps: never recreate/restart the db container as part of a deploy;
+# it must already be running (first-time setup: sudo docker compose up -d db)
 echo "=== Running migrations ==="
-sudo docker compose run --rm app alembic upgrade head
+sudo docker compose run --rm --no-deps app alembic upgrade head
 
 # here we are making our app service only Up , not postgres
 echo "=== Deploying app ==="

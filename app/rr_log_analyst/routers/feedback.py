@@ -8,12 +8,8 @@ from fastapi import APIRouter, Depends, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from app.dependencies.auth import resolve_identity
 from app.exceptions import NotFoundError
-from app.rr_log_analyst.auth import (
-    resolve_enterprise_id,
-    resolve_token,
-    resolve_user_id,
-)
 from app.rr_log_analyst.memory.slack_notifier import post_feedback
 from app.rr_log_analyst.repositories import ConversationRepository
 from app.rr_log_analyst.repositories.feedback_repo import FeedbackRepository
@@ -27,15 +23,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+async def _resolve_identity(
+    body: SubmitFeedbackRequest,
+    authorization: str | None = Header(default=None),
+) -> tuple[int, int, str]:
+    return await resolve_identity(
+        user_id=body.user_id,
+        enterprise_id=body.enterprise_id,
+        authorization=authorization,
+    )
+
+
 @router.post("/", response_model=FeedbackResponse)
 async def submit_feedback(
     body: SubmitFeedbackRequest,
-    authorization: str | None = Header(default=None),
+    identity: tuple[int, int, str] = Depends(_resolve_identity),
     session: AsyncSession = Depends(get_db),
 ):
-    resolve_token(authorization=authorization)
-    user_id = resolve_user_id(body.user_id)
-    enterprise_id = resolve_enterprise_id(body.enterprise_id)
+    user_id, enterprise_id, _ = identity
 
     # Ownership + existence check: only accept feedback on a conversation the
     # caller actually owns. seq is stored as an opaque turn anchor.

@@ -6,6 +6,7 @@ import jwt
 from fastapi import Header, HTTPException
 
 from app.config import settings
+from app.rr_log_analyst.auth import resolve_enterprise_id, resolve_token, resolve_user_id
 
 
 @dataclass(frozen=True)
@@ -79,3 +80,28 @@ async def require_auth(
         raise HTTPException(
             status_code=401, detail="Agent token is missing required claims."
         )
+
+
+async def resolve_identity(
+    *,
+    user_id: int,
+    enterprise_id: int,
+    authorization: str | None,
+) -> tuple[int, int, str]:
+    """Returns (user_id, enterprise_id, cp_token) for a request.
+
+    shared by every router that needs a caller's identity: switches on
+    settings.agent_jwt_enabled the same way everywhere, so a route can't be
+    left trusting client-supplied user_id/enterprise_id by omission.
+    - True:  identity comes from a verified clickpost-minted JWT
+    - False: legacy body/query values, for local testing
+    """
+    if settings.agent_jwt_enabled:
+        ctx = await require_auth(authorization=authorization)
+        return ctx.user_id, ctx.enterprise_id, ctx.cp_token
+
+    return (
+        resolve_user_id(user_id),
+        resolve_enterprise_id(enterprise_id),
+        resolve_token(authorization=authorization),
+    )

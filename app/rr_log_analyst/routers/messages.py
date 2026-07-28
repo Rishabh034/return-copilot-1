@@ -10,14 +10,9 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from app.db import AsyncSessionLocal
-from app.dependencies.auth import require_auth
+from app.dependencies.auth import resolve_identity
 from app.exceptions import NotFoundError
 from app.rr_log_analyst.agent import AgentRunner, build_system_prompt
-from app.rr_log_analyst.auth import (
-    resolve_enterprise_id,
-    resolve_token,
-    resolve_user_id,
-)
 from app.rr_log_analyst.memory.store import _extract_thinking, utc_now_iso_ms
 from app.rr_log_analyst.repositories import ConversationRepository
 from app.rr_log_analyst.repositories.message_mapper import build_partial_ai_message
@@ -81,20 +76,11 @@ async def _resolve_identity(
     body: SendMessageRequest,
     authorization: str | None = Header(default=None),
 ) -> tuple[int, int, str]:
-    """Returns (user_id, enterprise_id, cp_token) for this request.
-
-    switches on settings.agent_jwt_enabled:
-    - True:  identity comes from a verified clickpost-minted JWT
-    - False: for local testing 
-    """
-    if settings.agent_jwt_enabled:
-        ctx = await require_auth(authorization=authorization)
-        return ctx.user_id, ctx.enterprise_id, ctx.cp_token
-
-    user_id = resolve_user_id(body.user_id)
-    enterprise_id = resolve_enterprise_id(body.enterprise_id)
-    token = resolve_token(authorization=authorization)
-    return user_id, enterprise_id, token
+    return await resolve_identity(
+        user_id=body.user_id,
+        enterprise_id=body.enterprise_id,
+        authorization=authorization,
+    )
 
 
 @router.post("/messages/")

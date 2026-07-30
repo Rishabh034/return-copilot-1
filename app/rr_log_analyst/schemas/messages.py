@@ -9,3 +9,7 @@ class SendMessageRequest(BaseModel):
     username : str | None = Field(None, description="Clickpost dashboard username")
     user_id: int = Field(..., description="Clickpost dashboard user id")
     message_time: str | None = None
+    use_extra_tokens: bool = Field(
+        False,
+        description="Claim the one-time extra-token allowance for this window",
+    )

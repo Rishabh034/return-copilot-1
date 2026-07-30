@@ -14,7 +14,6 @@ from langchain_core.messages import (
     messages_from_dict,
 )
 
-from app.rr_log_analyst.agent.context import message_token_count
 from app.rr_log_analyst.memory.tool_results import (
     stored_tool_result_from_dict,
     stored_tool_result_to_dict,
@@ -116,17 +115,24 @@ def message_to_row(
     tool_name: str | None = None
     tool_args: dict[str, Any] | None = None
     tool_result: dict[str, Any] | None = None
+    token_count: int | None = None
 
-    if isinstance(message, AIMessage) and message.tool_calls:
-        tool_call = message.tool_calls[0]
-        tool_call_id = tool_call.get("id")
-        tool_name = tool_call.get("name")
-        tool_args = tool_call.get("args")
+    if isinstance(message, AIMessage):
+        if message.usage_metadata:
+            token_count = message.usage_metadata.get("output_tokens")
+        if message.tool_calls:
+            tool_call = message.tool_calls[0]
+            tool_call_id = tool_call.get("id")
+            tool_name = tool_call.get("name")
+            tool_args = tool_call.get("args")
 
     if isinstance(message, ToolMessage):
         tool_call_id = message.tool_call_id
         tool_name = message.name
         tool_result = _resolve_tool_result(message, conversation_key)
+        usage_metadata = message.additional_kwargs.get("usage_metadata")
+        if isinstance(usage_metadata, dict):
+            token_count = usage_metadata.get("output_tokens")
 
     role = langchain_role(message)
     if role == "tool" and tool_result is None:
@@ -147,7 +153,7 @@ def message_to_row(
         tool_name=tool_name,
         tool_args=tool_args,
         tool_result=tool_result,
-        token_count=message_token_count(message),
+        token_count=token_count,
         raw_response=message_to_dict(message),
     )
 

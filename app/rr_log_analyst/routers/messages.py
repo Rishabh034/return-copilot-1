@@ -4,17 +4,20 @@ import asyncio
 import json
 import logging
 import uuid
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from sqlalchemy import update
 
 from app.db import AsyncSessionLocal
 from app.dependencies.auth import resolve_identity
 from app.exceptions import NotFoundError
 from app.rr_log_analyst.agent import AgentRunner, build_system_prompt
 from app.rr_log_analyst.memory.store import _extract_thinking, utc_now_iso_ms
-from app.rr_log_analyst.repositories import ConversationRepository
+from app.rr_log_analyst.models.message import Message
+from app.rr_log_analyst.repositories import ConversationRepository, UserTokenRepository
 from app.rr_log_analyst.repositories.message_mapper import build_partial_ai_message
 from app.rr_log_analyst.schemas.messages import SendMessageRequest
 from app.rr_log_analyst.services.title import generate_conversation_title
@@ -23,6 +26,34 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+async def _settle_user_tokens(
+    *,
+    user_id: int,
+    enterprise_id: int,
+    input_tokens: int,
+    output_tokens: int,
+    human_message_id: uuid.UUID,
+    side_input_tokens: int = 0,
+) -> None:
+    if input_tokens <= 0 and output_tokens <= 0 and side_input_tokens <= 0:
+        return
+    async with AsyncSessionLocal() as session:
+        repo = UserTokenRepository(session)
+        await session.execute(
+            update(Message)
+            .where(Message.id == human_message_id)
+            .values(token_count=input_tokens)
+        )
+        await repo.update_tokens(
+            user_id=user_id,
+            enterprise_id=enterprise_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            side_input_tokens=side_input_tokens,
+        )
+        await session.commit()
 
 
 def _stamp_message_time(message: BaseMessage, message_time: str | None = None) -> None:
@@ -90,6 +121,54 @@ async def send_message(
     identity: tuple[int, int, str] = Depends(_resolve_identity),
 ):
     user_id, enterprise_id, token = identity
+
+    async with AsyncSessionLocal() as session:
+        token_repo = UserTokenRepository(session)
+        if body.use_extra_tokens:
+            try:
+                await token_repo.add_extra_tokens(
+                    user_id=user_id,
+                    enterprise_id=enterprise_id,
+                )
+            except ValueError as exc:
+                await session.rollback()
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        allowed = await token_repo.can_start(
+            user_id=user_id,
+            enterprise_id=enterprise_id,
+        )
+        quota = await token_repo.get_owned(
+            user_id=user_id,
+            enterprise_id=enterprise_id,
+        )
+        await session.commit()
+
+    if not allowed:
+        reset_at = quota.reset_at if quota is not None else None
+        can_claim_extra_tokens = bool(
+            quota is not None
+            and not quota.extra_token_used
+            and (
+                quota.used_input_tokens + quota.used_output_tokens
+                >= quota.max_input_tokens + quota.max_output_tokens
+            )
+        )
+        retry_after = (
+            max(0, int((reset_at - datetime.now(timezone.utc)).total_seconds()))
+            if reset_at is not None
+            else 0
+        )
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "message": "Token limit reached",
+                "reset_at": reset_at.isoformat() if reset_at is not None else None,
+                "can_claim_extra_tokens": can_claim_extra_tokens,
+            },
+            headers={"Retry-After": str(retry_after)},
+        )
+
     clickpost_client = getattr(request.app.state, "clickpost_client", None)
     enterprise_name = body.enterprise_name if body.enterprise_name else None
     username = body.username if body.username else None
@@ -138,6 +217,10 @@ async def send_message(
             partial_buffer = ""  # accumulates text_delta for the in-flight turn
             last_ai_message: AIMessage | None = None
             last_ai_seq: int | None = None  # row seq of the final assistant turn
+            completed_input_tokens = 0
+            completed_side_input_tokens = 0
+            completed_output_tokens = 0
+            usage_settled = False
 
             # Create-or-attach the conversation and persist the user's message
             # immediately, so a stopped turn always leaves a resumable history.
@@ -157,7 +240,11 @@ async def send_message(
                     raise NotFoundError("Conversation not found")
 
             seq = await repo.next_seq(conversation.id)
-            await repo.append_message(conversation, seq=seq, message=human_message)
+            human_row = await repo.append_message(
+                conversation,
+                seq=seq,
+                message=human_message,
+            )
             seq += 1
             await session.commit()
             
@@ -191,6 +278,25 @@ async def send_message(
                         if isinstance(message, AIMessage):
                             last_ai_message = message
                             last_ai_seq = seq  # anchor feedback to this row's seq
+                            if message.usage_metadata:
+                                completed_input_tokens = max(
+                                    completed_input_tokens,
+                                    message.usage_metadata.get("input_tokens") or 0,
+                                )
+                                completed_output_tokens += (
+                                    message.usage_metadata.get("output_tokens") or 0
+                                )
+                        else:
+                            hidden_usage = message.additional_kwargs.get(
+                                "usage_metadata"
+                            )
+                            if isinstance(hidden_usage, dict):
+                                completed_side_input_tokens += (
+                                    hidden_usage.get("input_tokens") or 0
+                                )
+                                completed_output_tokens += (
+                                    hidden_usage.get("output_tokens") or 0
+                                )
                         seq += 1
                         await session.commit()
                         partial_buffer = ""  # this turn finalized cleanly
@@ -200,6 +306,28 @@ async def send_message(
                         partial_buffer += data.get("delta", "")
 
                     if event_type == "done":
+                        usage = data.get("usage") or {}
+                        secondary_usage = data.get("secondary_usage") or {}
+                        by_iteration = data.get("usage_by_iteration") or []
+                        # Each iteration resends the previous one's prompt, so
+                        # the largest prompt already covers them all; summing
+                        # would bill the same context once per iteration.
+                        settled_input = max(
+                            (i.get("input_tokens") or 0 for i in by_iteration),
+                            default=usage.get("input_tokens") or 0,
+                        )
+                        settled_output = (usage.get("output_tokens") or 0) + (
+                            secondary_usage.get("output_tokens") or 0
+                        )
+                        await _settle_user_tokens(
+                            user_id=user_id,
+                            enterprise_id=enterprise_id,
+                            input_tokens=settled_input,
+                            output_tokens=settled_output,
+                            side_input_tokens=secondary_usage.get("input_tokens") or 0,
+                            human_message_id=human_row.id,
+                        )
+                        usage_settled = True
                         thinking = (
                             _extract_thinking(last_ai_message.content)
                             if last_ai_message is not None
@@ -254,6 +382,22 @@ async def send_message(
                 logger.exception("SSE stream error")
                 payload = json.dumps({"code": "internal_error", "message": str(e)})
                 yield f"event: error\ndata: {payload}\n\n"
+            finally:
+                if not usage_settled and (
+                    completed_input_tokens > 0
+                    or completed_side_input_tokens > 0
+                    or completed_output_tokens > 0
+                ):
+                    await asyncio.shield(
+                        _settle_user_tokens(
+                            user_id=user_id,
+                            enterprise_id=enterprise_id,
+                            input_tokens=completed_input_tokens,
+                            output_tokens=completed_output_tokens,
+                            side_input_tokens=completed_side_input_tokens,
+                            human_message_id=human_row.id,
+                        )
+                    )
 
     return StreamingResponse(
         event_stream(),

@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     rr_analyst_thinking_budget_tokens: int = 2048
 
     rr_analyst_secondary_model: str = "claude-haiku-4-5"
-    rr_analyst_secondary_max_output_tokens: int = 8192
+    rr_analyst_secondary_max_output_tokens: int = 4048
     rr_analyst_scratchpad_enabled: bool = True
     scratchpad_chunk_chars: int = 12_000  # max chars per raw data part / Haiku summarization call
     scratchpad_inline_max_chars: int = 80_000

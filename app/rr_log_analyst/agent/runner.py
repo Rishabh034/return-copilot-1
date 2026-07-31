@@ -522,6 +522,9 @@ class AgentRunner:
                     content=tool_message_content,
                     tool_call_id=tool_id,
                     name=tool_name,
+                    additional_kwargs=(
+                        {"usage_metadata": built.usage} if built.usage else {}
+                    ),
                 )
                 messages.append(tool_message)
                 yield ("message_complete", {"message": tool_message})

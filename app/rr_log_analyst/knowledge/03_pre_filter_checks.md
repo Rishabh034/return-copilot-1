@@ -1,9 +1,9 @@
 # Pre-Filter Checks
 
 ## What Are Pre-Filter Checks?
-Before any Filter Rule or Ordered List is evaluated, Clickpost runs a series of system-level checks to narrow down the universe of available carriers. These checks happen automatically based on account configuration, serviceability data, and historical scan events.
+Before the Attribute Layer and any Filter Rule or Ordered List is evaluated, Clickpost runs a series of system-level checks to narrow down the universe of available carriers. These checks happen automatically based on account configuration, serviceability data, and historical scan events.
 
-The output of these checks (`serviceable_account_ids`) is the set of accounts that are passed into the Filter layer.
+The output of these checks (`serviceable_account_ids`) is the set of accounts that next enter the **Attribute Layer** (carrier exception), then the Filter layer. See `15_carrier_attribute_layer.md`.
 
 ## Position in the Pipeline (actual engine order, with `filters_ran` keys)
 ```
@@ -20,7 +20,7 @@ Serviceability engine call — produces three things at once:
 [2.2] Overall LD cap (if enabled)    → 2_2_serviceable_accounts_without_exhausted_overall_cap
 [2.4] Global blacklisting service    → 2_4_global_blacklisting_serviceability_filter
       ↓
-Filter Rules → Ordered List / PBA → Final Allocation
+Attribute Layer (carrier exception) → Filter Rules → Ordered List / PBA → Final Allocation
 ```
 
 Note: each `filters_ran` key shows the accounts **remaining after** that check (except `1_accounts_out_of_threshold` and `1_blacklisted_accounts`, which list the **removed** accounts). Some enterprise-specific keys also appear, e.g. `1_accounts_missing_cod_or_prepaid_support`, `1_accounts_exceeding_invoice_value_limit`, `2_3_serviceable_accounts_after_enterprise_custom_key_filter` (TataCliq), `2_removed_accs_for_ndd_filter`, `2_account_removed_missing_sla` / `_transport_mode` / `_tat`.
@@ -115,8 +115,8 @@ If the enterprise has the GLOBAL_SERVICEABILITY_BLACKLISTING service enabled, ac
 
 ## Key Notes
 
-1. All these checks happen **before** any Filter Rule is evaluated
-2. Their output = the universe of accounts that enter the Filter layer (`serviceable_account_ids`)
-3. Even if an account is in a Filter's `account_list`, it will not be allocated if it was removed in pre-filter checks
+1. All these checks happen **before** the Attribute Layer and any Filter Rule
+2. Their output = the universe of accounts that enter the Attribute Layer, then Filters (`serviceable_account_ids`)
+3. Even if an account is in a Filter's `account_list`, it will not be allocated if it was removed in pre-filter checks or by the Attribute Layer
 4. ODA is **per carrier (CPID)**, not per account — and only runs when `oda_filter` is enabled
 5. Serviceability must be proactively uploaded per account — missing serviceability = account dropped

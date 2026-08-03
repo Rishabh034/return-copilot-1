@@ -19,7 +19,7 @@ _RR_LOG_PATH = "/api/v2/clickpost/request_logs_v2"
 _TRACK_ORDER_SHIPMENT_DETAILS_PATH = "/api/v1/dashboard/track-order-shipment-details/"
 
 _RULES_CONFIG_PATH = "/api/v1/selector-filters-config"
-
+_CARRIER_EXCEPTION = "/api/v1/attribute-rules-config"
 _ACCOUNTS_PATH = "/api/v1/dashboard/courier_accounts"
 _COURIER_PARTNERS_PATH = "/api/v1/dashboard/courier_partners/"
 
@@ -400,4 +400,15 @@ class ClickpostClient:
             _CHECK_SERVICEABILITY_PATH,
             token,
             params,
+        )
+        
+        
+    # -- Attribute Layer / carrier exception rules --------------------------
+
+    async def get_carrier_exception_rules(self, token: str) -> Any:
+        """List Attribute Layer (carrier exception / attribute-rules) configs for the enterprise."""
+        return await self._get(
+            _CARRIER_EXCEPTION,
+            token,
+            {},
         )

@@ -37,7 +37,7 @@ An enterprise can have one enabled and not the other.
 
 ## Visibility in the RR Log
 Every matched rule (including skipped ones) is recorded with its evaluation order:
-- Filters: `filters_ran.3_clickpost_filters_rules_list` — list of `{sequence, rule_name, rule_priority, has_serviceable_accounts, allocation_type}`
+- Filters: `filters_ran.3_clickpost_filters_rules_list` — list of `{sequence, rule_name, rule_priority, has_serviceable_accounts, allocation_type, load_distribution_filter_enabled, load_distribution_applied, load_distribution_account_config}` (LD fields may be absent on older logs)
 - OLs: `filters_ran.4_ordered_list_rules_list` — list of `{sequence, rule_name, rule_priority, has_serviceable_accounts}`
 
 A rule with `has_serviceable_accounts: false` followed by another entry with a higher `sequence` = rule iteration happened.

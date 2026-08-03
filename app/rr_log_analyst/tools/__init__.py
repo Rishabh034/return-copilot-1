@@ -5,6 +5,7 @@ from langchain_core.tools import BaseTool
 from app.rr_log_analyst.tools import (
     accounts,
     audit_logs,
+    carrier_exception,
     check_serviceability,
     courier_partners,
     flow_config,
@@ -20,6 +21,7 @@ from app.rr_log_analyst.tools.context import ToolContext
 _TOOL_MODULES = (
     accounts,
     audit_logs,
+    carrier_exception,
     check_serviceability,
     courier_partners,
     flow_config,

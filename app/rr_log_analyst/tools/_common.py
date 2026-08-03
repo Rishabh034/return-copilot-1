@@ -57,6 +57,19 @@ def shape_rule(rule: dict) -> dict:
     }
     return {k: v for k, v in shaped.items() if v is not None and v != ""}
 
+def shape_carrier_exception_rule(rule: dict) -> dict:
+    """Pick the fields of an Attribute Layer (carrier exception) rule the analyst cares about."""
+    shaped = {
+        "id": rule.get("id"),
+        "courier_partner_id": rule.get("courier_partner_id"),
+        "rule_name" : rule.get("rule_name"),
+        "rule" : rule.get("rule") or [],
+        "exclusion_list" : rule.get("exclusion_list") or [],
+        "enabled": rule.get("enabled"),
+        "updated_at": rule.get("updated_at"),
+    }
+    
+    return {k:v for k,v in shaped.items() if v is not None and v != ""}
 
 FILTERS_RAN_KEYS = (
     "1_active_accounts_filter",

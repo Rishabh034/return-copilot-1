@@ -25,4 +25,6 @@ class BadRequestError(AppError):
 
 
 async def app_error_handler(_request: Request, exc: AppError) -> JSONResponse:
-    return JSONResponse(status_code=exc.status_code, content={"error": exc.message})
+    # {"detail": ...} matches FastAPI's HTTPException shape so the response
+    # envelope middleware lifts the message into meta.message uniformly.
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})

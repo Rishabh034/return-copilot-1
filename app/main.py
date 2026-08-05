@@ -15,6 +15,7 @@ from app.exceptions import AppError, app_error_handler
 from app.log_uploader import S3LogUploader
 from app.logging_config import setup_logging
 from app.request_context import request_id_var
+from app.response_envelope import ResponseEnvelopeMiddleware
 from app.routers import rr_log_analyst_router
 
 setup_logging()
@@ -88,6 +89,7 @@ def create_app() -> FastAPI:
     )
 
     application.add_middleware(RequestIdMiddleware)
+    application.add_middleware(ResponseEnvelopeMiddleware)
     application.add_middleware(
         CORSMiddleware,
         allow_origins=_ALLOWED_ORIGINS.split(","),

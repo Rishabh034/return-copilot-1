@@ -14,6 +14,7 @@ from langchain_core.messages import (
     messages_from_dict,
 )
 
+from app.rr_log_analyst.memory.store import _extract_thinking
 from app.rr_log_analyst.memory.tool_results import (
     stored_tool_result_from_dict,
     stored_tool_result_to_dict,
@@ -156,6 +157,93 @@ def message_to_row(
         token_count=token_count,
         raw_response=message_to_dict(message),
     )
+
+
+def _trim_tool_result(tool_result: dict[str, Any]) -> dict[str, Any]:
+    """Drop the bulky raw-data payloads from a persisted tool result envelope.
+
+    Compact envelopes carry raw_data_parts/scratchpad_batches that can run to
+    hundreds of KB per tool call — the transcript keeps the actual result and
+    the scratchpad summary, which is what a reader needs.
+    """
+    if not _is_persisted_tool_result(tool_result):
+        return tool_result
+    trimmed = {
+        key: value
+        for key, value in tool_result.items()
+        if key not in ("raw_data_parts", "scratchpad_batches")
+    }
+    return trimmed
+
+
+def rows_to_transcript(
+    rows: list[Message],
+    *,
+    include_raw: bool = False,
+) -> list[dict[str, Any]]:
+    """Full ordered transcript: every persisted row (human/ai/tool) in seq order.
+
+    Unlike to_display_messages, nothing is collapsed or hidden — AI turns keep
+    their tool_calls and thinking, and tool rows keep their results. Reads only
+    from the DB rows (raw_response + columns), so it works without the
+    in-memory tool result store.
+    """
+    entries: list[dict[str, Any]] = []
+    for row in sorted(rows, key=lambda r: r.seq):
+        content = row.content
+        reasoning: str | None = None
+        tool_calls: list[dict[str, Any]] | None = None
+        message_time: str | None = None
+
+        if row.raw_response:
+            try:
+                message = messages_from_dict([row.raw_response])[0]
+            except Exception:
+                logger.warning(
+                    "Failed to reconstruct message conversation_id=%s seq=%d",
+                    row.conversation_id,
+                    row.seq,
+                )
+                message = None
+            if message is not None:
+                text = _text_content(message.content)
+                if text:
+                    content = text
+                ts = message.additional_kwargs.get("message_time")
+                message_time = ts if isinstance(ts, str) else None
+                if isinstance(message, AIMessage):
+                    thinking = _extract_thinking(message.content)
+                    reasoning = thinking or None
+                    if message.tool_calls:
+                        tool_calls = [
+                            {
+                                "id": tool_call.get("id"),
+                                "name": tool_call.get("name"),
+                                "args": tool_call.get("args") or {},
+                            }
+                            for tool_call in message.tool_calls
+                        ]
+
+        tool_result = row.tool_result
+        if tool_result is not None and not include_raw:
+            tool_result = _trim_tool_result(tool_result)
+
+        entries.append(
+            {
+                "seq": row.seq,
+                "role": row.role,
+                "status": row.status,
+                "content": content,
+                "reasoning": reasoning,
+                "tool_calls": tool_calls,
+                "tool_call_id": row.tool_call_id if row.role == "tool" else None,
+                "tool_name": row.tool_name if row.role == "tool" else None,
+                "tool_result": tool_result,
+                "message_time": message_time,
+                "created_at": row.created_at,
+            }
+        )
+    return entries
 
 
 def rows_to_messages(

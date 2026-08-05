@@ -1,0 +1,61 @@
+{
+    "name": "log_api_test_tool",
+    "description": "The tool logs the outcome of a single API test immediately after evaluating its response. Call this exactly once per endpoint tested, right after you have determined success or failure for that endpoint.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "endpoint_name": {
+                "type": "string",
+                "description": "The name of the API endpoint that was tested."
+            },
+            "api_type": {
+                "type": "string",
+                "enum": ["json", "xml"],
+                "description": "The type of the API endpoint that was tested. The value is based on the payload format of the request body that the API accepts. For example json or xml."
+            },
+            "url": {
+                "type": "string",
+                "description": "The URL of the API endpoint that was tested."
+            },
+            "service": {
+                "type": "string",
+                "enum": ["order_creation", "order_cancellation", "tracking_polling", "tracking_webhook"],
+                "description": "The service pertaining to the business logic domain to which the tested API endpoint maps to. "
+            },
+            "method": {
+                "type": "string",
+                "description": "The HTTP method of the API endpoint that was tested."
+            },
+            "request_headers": {
+                "type": "object",
+                "description": "The HTTP request headers of the API endpoint that was tested."
+            },
+            "request_body": {
+                "type": "string",
+                "description": "The request body string of the API endpoint that was tested."
+            },
+            "status_code": {
+                "type": ["integer", "null"],
+                "description": "The HTTP status code of the API response. It will be null if the API test failed without returning any response from the endpoint."
+            },
+            "response_body": {
+                "type": ["string", "null"],
+                "description": "The response body string of the API response. It will be null if the API test failed without returning any response from the endpoint."
+            },
+            "success": {
+                "type": "boolean",
+                "description": "Indicates whether the API test succeeded or not. Fill this value based on your inference of the API response as per the criterias mentioned in the system prompt."
+            },
+            "failure_reason": {
+                "type": ["string", "null"],
+                "description": "Describes the reason for API request failure. Fill this value with an explanation of the reason for failure with medium brevity based on your inference of the API response. It will be null if the API succeeded."
+            },
+            "resolution_steps": {
+                "type": ["string", "null"],
+                "description": "Describes the steps that can be taken to resolve the API failure. Depending on the reason for failure, it may involve steps regarding contacting the carrier partner POC requesting clarification. Fill this value as per the instructions provided in the system prompt. It will be null if the API succeeded."
+            }
+        },
+        "required": ["url", "service", "method", "request_headers",
+            "request_body", "status_code", "response_body", "success", "failure_reason", "resolution_steps"]
+    }
+}

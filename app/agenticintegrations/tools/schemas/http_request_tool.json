@@ -1,0 +1,27 @@
+{
+    "name": "http_request_tool",
+    "description": "The tool makes an HTTP request and retrieves the response. It takes the request type (whether it is a GET/POST/PUT request), the URL, the headers and the request body as parameters. It should be used to make HTTP requests to the carrier partner APIs in order to test the APIs.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "request_type": {
+                "type": "string",
+                "description": "The HTTP method type of the request. Whether it is a GET or POST or PUT request",
+                "enum": ["GET", "POST", "PUT"]
+            },
+            "url": {
+                "type": "string",
+                "description": "URL of the endpoint to which the HTTP request needs to be made"
+            },
+            "headers": {
+                "type": "object",
+                "description": "Key-value header fields for the HTTP request to be made. It must contain one Content-Type key representing the content type of the request body in the case of POST or PUT requests. It may contain key-value pairs representing API authentication related fields."
+            },
+            "body": {
+                "type": "string",
+                "description": "The request body to be sent in the HTTP request. It should be in a valid format as per the Content-Type of the request. For example, if the content type is application/json then the body should a valid json string. It will be empty for a GET request type."
+            }
+        },
+        "required": ["request_type", "url", "headers", "body"]
+    }
+}

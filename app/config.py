@@ -6,20 +6,28 @@ from pydantic_settings import BaseSettings
 from app.utilities.creds import aws_secrets
 
 # Seed the environment with values fetched from AWS Secrets Manager so
-# BaseSettings can read them. The secrets are shared account-wide, so only
-# take this app's CLICKHELP_-prefixed keys and strip the prefix to map them
-# onto the Settings fields / env var names below. setdefault-style check keeps
-# real env vars and .env (loaded via load_dotenv in creds) as overrides.
+# BaseSettings can read them. The secrets are shared account-wide and don't
+# follow one consistent naming convention, so map each AWS key explicitly to
+# the env var / Settings field name this app reads, rather than assuming a
+# shared prefix. setdefault-style check keeps real env vars and .env (loaded
+# via load_dotenv in creds) as overrides.
+#
+_AWS_SECRET_TO_ENV = {
+    "ANTHROPIC_API_KEY": "ANTHROPIC_API_KEY",
+    "DATABASE_URL": "DATABASE_URL",
+    "POSTGRES_PASSWORD": "POSTGRES_PASSWORD",
+    "AI_AGENT_JWT_PUBLIC_KEY": "AGENT_JWT_PUBLIC_KEY",
+}
+
 _from_aws = []
 _from_env = []
-for _key, _value in aws_secrets.items():
-    if not _key.startswith("CLICKHELP_"):
+for _aws_key, _target in _AWS_SECRET_TO_ENV.items():
+    if _aws_key not in aws_secrets:
         continue
-    _target = _key.removeprefix("CLICKHELP_")
     # empty env values (e.g. a leftover `DATABASE_URL=` line in .env) count
     # as unset — never let them mask a real value from Secrets Manager
     if not os.environ.get(_target):
-        os.environ[_target] = str(_value)
+        os.environ[_target] = str(aws_secrets[_aws_key])
         _from_aws.append(_target)
     else:
         _from_env.append(_target)

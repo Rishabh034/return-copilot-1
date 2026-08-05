@@ -9,6 +9,20 @@ from app.config import settings
 from app.rr_log_analyst.auth import resolve_enterprise_id, resolve_token, resolve_user_id
 
 
+class AgentAuthError(Exception):
+    """Agent-token auth failure.
+
+    Rendered as HTTP 200 with the real status in the body (meta.status_code)
+    instead of a 401 - some caller in front of this service treats non-200
+    responses as a transport failure and drops the body.
+    """
+
+    def __init__(self, detail: str, status_code: int = 401):
+        self.detail = detail
+        self.status_code = status_code
+        super().__init__(detail)
+
+
 @dataclass(frozen=True)
 class AuthContext:
     """Verified identity from a clickpost-minted agent JWT.
@@ -40,16 +54,14 @@ async def require_auth(
         )
 
     if not authorization:
-        raise HTTPException(
-            status_code=401,
-            detail="Missing agent token. Provide Authorization: Bearer <jwt> "
+        raise AgentAuthError(
+            "Missing agent token. Provide Authorization: Bearer <jwt> "
             "(minted via clickpost POST /api/v1/ai-agent/token/).",
         )
     parts = authorization.split(maxsplit=1)
     if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1].strip():
-        raise HTTPException(
-            status_code=401,
-            detail="Malformed Authorization header; expected: Bearer <jwt>",
+        raise AgentAuthError(
+            "Malformed Authorization header; expected: Bearer <jwt>",
         )
     token = parts[1].strip()
 
@@ -63,12 +75,11 @@ async def require_auth(
             options={"require": ["exp", "aud", "iss"]},
         )
     except jwt.ExpiredSignatureError:
-        raise HTTPException(
-            status_code=401,
-            detail="Agent token expired. Mint a new one from clickpost and retry.",
+        raise AgentAuthError(
+            "Agent token expired. Mint a new one from clickpost and retry.",
         )
     except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid agent token.")
+        raise AgentAuthError("Invalid agent token.")
 
     try:
         return AuthContext(
@@ -77,9 +88,7 @@ async def require_auth(
             cp_token=str(claims["cp_token"]),
         )
     except (KeyError, TypeError, ValueError):
-        raise HTTPException(
-            status_code=401, detail="Agent token is missing required claims."
-        )
+        raise AgentAuthError("Agent token is missing required claims.")
 
 
 async def resolve_identity(

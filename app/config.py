@@ -6,17 +6,14 @@ from pydantic_settings import BaseSettings
 from app.utilities.creds import aws_secrets
 
 # Seed the environment with values fetched from AWS Secrets Manager so
-# BaseSettings can read them. The secrets are shared account-wide and don't
-# follow one consistent naming convention, so map each AWS key explicitly to
-# the env var / Settings field name this app reads, rather than assuming a
-# shared prefix. setdefault-style check keeps real env vars and .env (loaded
-# via load_dotenv in creds) as overrides.
-#
+# BaseSettings can read them. This account's secrets are CLICKHELP_-prefixed
+# and shared across every clickpost service (confirmed 2026-08-05 - DB_CREDS/
+# ACCESS_KEYS/API_KEYS
 _AWS_SECRET_TO_ENV = {
-    "ANTHROPIC_API_KEY": "ANTHROPIC_API_KEY",
-    "DATABASE_URL": "DATABASE_URL",
-    "POSTGRES_PASSWORD": "POSTGRES_PASSWORD",
-    "AI_AGENT_JWT_PUBLIC_KEY": "AGENT_JWT_PUBLIC_KEY",
+    "CLICKHELP_ANTHROPIC_API_KEY": "ANTHROPIC_API_KEY",
+    "CLICKHELP_DATABASE_URL": "DATABASE_URL",
+    "CLICKHELP_POSTGRES_PASSWORD": "POSTGRES_PASSWORD",
+    "CLICKHELP_AI_AGENT_JWT_PUBLIC_KEY": "AGENT_JWT_PUBLIC_KEY",
 }
 
 _from_aws = []

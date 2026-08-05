@@ -7,7 +7,7 @@ from app.utilities.secrets_manager_client import get_secret
 load_dotenv()
 
 # Keys that must be served by AWS Secrets Manager once removed from .env
-REQUIRED_AWS_KEYS = ["ANTHROPIC_API_KEY", "POSTGRES_PASSWORD", "DATABASE_URL"]
+REQUIRED_AWS_KEYS = ["CLICKHELP_ANTHROPIC_API_KEY", "CLICKHELP_POSTGRES_PASSWORD", "CLICKHELP_DATABASE_URL"]
 
 # Fetch secrets from multiple AWS Secrets Manager entries
 aws_secrets = {}

@@ -39,3 +39,4 @@ boto3>=1.34,<2
 # Verifying clickpost-minted agent JWTs (RS256)
 PyJWT==2.13.0
 cryptography==46.0.0
+confluent-kafka==2.8.0

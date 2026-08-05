@@ -7,7 +7,6 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from sqlalchemy import update
@@ -160,17 +159,14 @@ async def send_message(
             if reset_at is not None
             else 0
         )
-        return JSONResponse(
+        # Standard {"detail": {...}} shape; ResponseEnvelopeMiddleware lifts
+        # "message" into meta.message and puts the rest under data.
+        raise HTTPException(
             status_code=429,
-            content={
-                "meta": {
-                    "status": 429,
-                    "message": "Token limit reached.",
-                },
-                "detail": {
-                    "reset_at": reset_at.isoformat() if reset_at else None,
-                    "can_claim_extra_tokens": can_claim_extra_tokens,
-                },
+            detail={
+                "message": "Token limit reached.",
+                "reset_at": reset_at.isoformat() if reset_at else None,
+                "can_claim_extra_tokens": can_claim_extra_tokens,
             },
             headers={"Retry-After": str(retry_after)},
         )

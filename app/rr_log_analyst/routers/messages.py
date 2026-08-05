@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from sqlalchemy import update
@@ -159,12 +160,17 @@ async def send_message(
             if reset_at is not None
             else 0
         )
-        raise HTTPException(
+        return JSONResponse(
             status_code=429,
-            detail={
-                "message": "Token limit reached",
-                "reset_at": reset_at.isoformat() if reset_at is not None else None,
-                "can_claim_extra_tokens": can_claim_extra_tokens,
+            content={
+                "meta": {
+                    "status": 429,
+                    "message": "Token limit reached.",
+                },
+                "detail": {
+                    "reset_at": reset_at.isoformat() if reset_at else None,
+                    "can_claim_extra_tokens": can_claim_extra_tokens,
+                },
             },
             headers={"Retry-After": str(retry_after)},
         )

@@ -5,10 +5,12 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.clients.clickpost import ClickpostClient
 from app.config import settings
+from app.dependencies.auth import AgentAuthError
 from app.exceptions import AppError, app_error_handler
 from app.log_uploader import S3LogUploader
 from app.logging_config import setup_logging
@@ -49,6 +51,13 @@ class RequestIdMiddleware:
 
 _ALLOWED_ORIGINS = settings.allowed_origins
 logger = logging.getLogger(__name__)
+
+
+async def agent_auth_error_handler(_request, exc: AgentAuthError) -> JSONResponse:
+    return JSONResponse(
+        status_code=200,
+        content={"meta": {"status": exc.status_code, "message": exc.detail}},
+    )
 
 
 @asynccontextmanager
@@ -98,6 +107,7 @@ def create_app() -> FastAPI:
     )
 
     application.add_exception_handler(AppError, app_error_handler)
+    application.add_exception_handler(AgentAuthError, agent_auth_error_handler)
 
     return application
 

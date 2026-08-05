@@ -8,15 +8,7 @@ from app.utilities.creds import aws_secrets
 # Seed the environment with values fetched from AWS Secrets Manager so
 # BaseSettings can read them. This account's secrets are CLICKHELP_-prefixed
 # and shared across every clickpost service (confirmed 2026-08-05 - DB_CREDS/
-# ACCESS_KEYS/API_KEYS hold dozens of unrelated services' credentials, not
-# just this app's). Map each raw AWS key we actually need to the env var /
-# Settings field name this app reads - deliberately an allowlist, not a
-# blanket CLICKHELP_ prefix-strip, so we never load secrets this app doesn't
-# use (most importantly CLICKHELP_AI_AGENT_JWT_PRIVATE_KEY, which sits in the
-# same secret blob - only clickpost should ever hold that key, see
-# app/dependencies/auth.py::require_auth) into this process's environment.
-# setdefault-style check keeps real env vars and .env (loaded via
-# load_dotenv in creds) as overrides.
+# ACCESS_KEYS/API_KEYS
 _AWS_SECRET_TO_ENV = {
     "CLICKHELP_ANTHROPIC_API_KEY": "ANTHROPIC_API_KEY",
     "CLICKHELP_DATABASE_URL": "DATABASE_URL",

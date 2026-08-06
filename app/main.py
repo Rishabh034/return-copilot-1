@@ -15,7 +15,7 @@ from app.exceptions import AppError, app_error_handler
 from app.log_uploader import S3LogUploader
 from app.logging_config import setup_logging
 from app.request_context import request_id_var
-from app.response_envelope import ResponseEnvelopeMiddleware
+from app.response_envelope import ENVELOPE_STATUS_HEADER, ResponseEnvelopeMiddleware
 from app.routers import rr_log_analyst_router
 
 setup_logging()
@@ -55,9 +55,13 @@ logger = logging.getLogger(__name__)
 
 
 async def agent_auth_error_handler(_request, exc: AgentAuthError) -> JSONResponse:
+    # 200 on the wire, real status declared to the envelope middleware. The body
+    # matches FastAPI's {"detail": ...} shape so the message is lifted into
+    # meta.message the same way every other error's is.
     return JSONResponse(
         status_code=200,
-        content={"meta": {"status": exc.status_code, "message": exc.detail}},
+        content={"detail": exc.detail},
+        headers={ENVELOPE_STATUS_HEADER: str(exc.status_code)},
     )
 
 

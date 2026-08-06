@@ -20,6 +20,8 @@ class FeedbackRepository:
         enterprise_id: int,
         positive: bool,
         comment: str | None,
+        internal_user_id: str | None = None,
+        is_internal_user: bool = False,
     ) -> Feedback:
         feedback = Feedback(
             conversation_id=conversation_id,
@@ -28,6 +30,8 @@ class FeedbackRepository:
             enterprise_id=enterprise_id,
             positive=positive,
             comment=comment,
+            internal_user_id=internal_user_id,
+            is_internal_user=is_internal_user,
         )
         self._session.add(feedback)
         await self._session.flush()

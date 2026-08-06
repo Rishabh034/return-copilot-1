@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, Index, Integer, text
+from sqlalchemy import Boolean, DateTime, Float, Index, Integer, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,11 +24,19 @@ class UserToken(Base):
     __tablename__ = "user_token"
     __table_args__ = (
         Index(
-            "uq_user_token_active_user_enterprise",
+            "uq_user_token_active_external",
             "user_id",
             "enterprise_id",
             unique=True,
-            postgresql_where=text("is_active"),
+            postgresql_where=text("is_active AND NOT is_internal_user"),
+        ),
+        Index(
+            "uq_user_token_active_internal",
+            "user_id",
+            "enterprise_id",
+            "internal_user_id",
+            unique=True,
+            postgresql_where=text("is_active AND is_internal_user"),
         ),
     )
 
@@ -37,7 +45,10 @@ class UserToken(Base):
     )
     enterprise_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
-
+    internal_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_internal_user: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="true"
+    )
     max_input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=50_000)
     max_output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=8_096)
     used_input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

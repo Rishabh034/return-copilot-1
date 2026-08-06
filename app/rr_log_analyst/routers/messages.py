@@ -11,10 +11,15 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from sqlalchemy import update
 
+from datetime import datetime
 from app.db import AsyncSessionLocal
 from app.dependencies.auth import resolve_identity
-from app.exceptions import NotFoundError
+from app.exceptions import NotFoundError,BadRequestError
 from app.rr_log_analyst.agent import AgentRunner, build_system_prompt
+from app.rr_log_analyst.auth import (
+    resolve_internal_user_id,
+    resolve_is_internal_user,
+)
 from app.rr_log_analyst.memory.store import _extract_thinking, utc_now_iso_ms
 from app.rr_log_analyst.models.message import Message
 from app.rr_log_analyst.repositories import ConversationRepository, UserTokenRepository
@@ -27,11 +32,12 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-
 async def _settle_user_tokens(
     *,
     user_id: int,
     enterprise_id: int,
+    is_internal_user: bool,
+    internal_user_id: str | None,
     input_tokens: int,
     output_tokens: int,
     human_message_id: uuid.UUID,
@@ -49,6 +55,8 @@ async def _settle_user_tokens(
         await repo.update_tokens(
             user_id=user_id,
             enterprise_id=enterprise_id,
+            is_internal_user=is_internal_user,
+            internal_user_id=internal_user_id,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             side_input_tokens=side_input_tokens,
@@ -69,6 +77,8 @@ async def _persist_partial(
     *,
     user_id: int,
     enterprise_id: int,
+    internal_user_id: str | None,
+    is_internal_user: bool,
     text: str,
 ) -> None:
     """Append a display-only partial assistant row in its own session.
@@ -80,7 +90,11 @@ async def _persist_partial(
         async with AsyncSessionLocal() as session:
             repo = ConversationRepository(session)
             conversation = await repo.get_owned(
-                conversation_id, user_id=user_id, enterprise_id=enterprise_id
+                conversation_id,
+                user_id=user_id,
+                enterprise_id=enterprise_id,
+                internal_user_id=internal_user_id,
+                is_internal_user=is_internal_user,
             )
             if conversation is None:
                 return
@@ -111,6 +125,7 @@ async def _resolve_identity(
         user_id=body.user_id,
         enterprise_id=body.enterprise_id,
         authorization=authorization,
+    
     )
 
 
@@ -121,6 +136,14 @@ async def send_message(
     identity: tuple[int, int, str] = Depends(_resolve_identity),
 ):
     user_id, enterprise_id, token = identity
+    is_internal_user = resolve_is_internal_user(body.is_internal_user)
+    internal_user_id = resolve_internal_user_id(body.internal_user_id)
+
+    if not is_internal_user:
+        internal_user_id = None
+
+    if is_internal_user and internal_user_id is None:
+        raise BadRequestError("Internal user ID is required")
 
     async with AsyncSessionLocal() as session:
         token_repo = UserTokenRepository(session)
@@ -129,6 +152,8 @@ async def send_message(
                 await token_repo.add_extra_tokens(
                     user_id=user_id,
                     enterprise_id=enterprise_id,
+                    is_internal_user=is_internal_user,
+                    internal_user_id=internal_user_id,
                 )
             except ValueError as exc:
                 await session.rollback()
@@ -137,10 +162,14 @@ async def send_message(
         allowed = await token_repo.can_start(
             user_id=user_id,
             enterprise_id=enterprise_id,
+            is_internal_user=is_internal_user,
+            internal_user_id=internal_user_id,
         )
         quota = await token_repo.get_owned(
             user_id=user_id,
             enterprise_id=enterprise_id,
+            is_internal_user=is_internal_user,
+            internal_user_id=internal_user_id,
         )
         await session.commit()
 
@@ -174,16 +203,18 @@ async def send_message(
     clickpost_client = getattr(request.app.state, "clickpost_client", None)
     enterprise_name = body.enterprise_name if body.enterprise_name else None
     username = body.username if body.username else None
+    raw_message = body.message
+    display_message = raw_message.strip()
+
     system_prompt = await build_system_prompt(
         clickpost_client,
         token=token,
         enterprise_id=enterprise_id,
         message_time=body.message_time,
-        enterprise_name = enterprise_name,
-        username = username,
+        enterprise_name=enterprise_name,
+        username=username,
     )
     runner = AgentRunner(clickpost_client=clickpost_client)
-
     # Ownership / existence check up front so existing-but-unowned conversations
     # get a real 404 instead of a 200 stream carrying an error event. The replay
     # history loaded here (completed turns only) is what the agent loop sees.
@@ -195,6 +226,8 @@ async def send_message(
                 uuid.UUID(body.conversation_id),
                 user_id=user_id,
                 enterprise_id=enterprise_id,
+                internal_user_id=internal_user_id,
+                is_internal_user=is_internal_user,
             )
             if conversation is None:
                 raise NotFoundError("Conversation not found")
@@ -204,9 +237,13 @@ async def send_message(
             conversation_id = str(uuid.uuid4())
             messages = []
 
+    human_kwargs: dict = {
+        "message_time": body.message_time or utc_now_iso_ms(),
+    }
+
     human_message = HumanMessage(
-        content=body.message,
-        additional_kwargs={"message_time": body.message_time or utc_now_iso_ms()},
+        content=display_message,
+        additional_kwargs=human_kwargs,
     )
     messages.append(human_message)
 
@@ -231,12 +268,16 @@ async def send_message(
                     user_id=user_id,
                     enterprise_id=enterprise_id,
                     conversation_id=uuid.UUID(conversation_id),
+                    internal_user_id=internal_user_id,
+                    is_internal_user=is_internal_user,
                 )
             else:
                 conversation = await repo.get_owned(
                     uuid.UUID(conversation_id),
                     user_id=user_id,
                     enterprise_id=enterprise_id,
+                    internal_user_id=internal_user_id,
+                    is_internal_user=is_internal_user,
                 )
                 if conversation is None:
                     raise NotFoundError("Conversation not found")
@@ -251,17 +292,17 @@ async def send_message(
             await session.commit()
             
             if is_new_conversation:
-                    title = await generate_conversation_title(
-                        user_message=human_message.content
+                title = await generate_conversation_title(
+                    user_message=human_message.content
+                )
+                if title:
+                    conversation.title = title
+                    await session.commit()
+                    logger.info(
+                        "Set conversation title conversation_id=%s title=%r",
+                        conversation_id,
+                        title,
                     )
-                    if title:
-                        conversation.title = title
-                        await session.commit()
-                        logger.info(
-                            "Set conversation title conversation_id=%s title=%r",
-                            conversation_id,
-                            title,
-                        )
 
             try:
                 async for event_type, data in runner.handle_message_stream(
@@ -324,6 +365,8 @@ async def send_message(
                         await _settle_user_tokens(
                             user_id=user_id,
                             enterprise_id=enterprise_id,
+                            is_internal_user=is_internal_user,
+                            internal_user_id=internal_user_id,
                             input_tokens=settled_input,
                             output_tokens=settled_output,
                             side_input_tokens=secondary_usage.get("input_tokens") or 0,
@@ -376,6 +419,8 @@ async def send_message(
                             uuid.UUID(conversation_id),
                             user_id=user_id,
                             enterprise_id=enterprise_id,
+                            internal_user_id=internal_user_id,
+                            is_internal_user=is_internal_user,
                             text=text,
                         )
                     )
@@ -394,6 +439,8 @@ async def send_message(
                         _settle_user_tokens(
                             user_id=user_id,
                             enterprise_id=enterprise_id,
+                            is_internal_user=is_internal_user,
+                            internal_user_id=internal_user_id,
                             input_tokens=completed_input_tokens,
                             output_tokens=completed_output_tokens,
                             side_input_tokens=completed_side_input_tokens,

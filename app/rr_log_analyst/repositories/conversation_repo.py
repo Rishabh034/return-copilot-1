@@ -4,13 +4,30 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from langchain_core.messages import BaseMessage
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.rr_log_analyst.models.conversation import Conversation
 from app.rr_log_analyst.models.message import Message
 from app.rr_log_analyst.repositories.message_mapper import message_to_row, rows_to_messages
+
+
+LEGACY_CONVERSATION_CUTOFF = datetime(2026, 8, 6, tzinfo=timezone.utc)
+CONVERSATION_STALE_AFTER = timedelta(days=14)
+
+
+def _available_conversation_clause(now: datetime | None = None):
+    """Conversations users may still open or continue.
+
+    Conversations created before the legacy cutoff expire once they reach the
+    configured age. Conversations created on/after the cutoff do not expire.
+    """
+    stale_before = (now or datetime.now(timezone.utc)) - CONVERSATION_STALE_AFTER
+    return or_(
+        Conversation.created_at >= LEGACY_CONVERSATION_CUTOFF,
+        Conversation.created_at > stale_before,
+    )
 
 
 class ConversationRepository:
@@ -23,11 +40,15 @@ class ConversationRepository:
         user_id: int,
         enterprise_id: int,
         conversation_id: uuid.UUID | None = None,
+        internal_user_id: str | None = None,
+        is_internal_user: bool = False,
     ) -> Conversation:
         conversation = Conversation(
             id=conversation_id or uuid.uuid4(),
             user_id=user_id,
             enterprise_id=enterprise_id,
+            internal_user_id=internal_user_id,
+            is_internal_user=is_internal_user,
         )
         self._session.add(conversation)
         await self._session.flush()
@@ -39,13 +60,20 @@ class ConversationRepository:
         *,
         user_id: int,
         enterprise_id: int,
+        internal_user_id: str | None = None,
+        is_internal_user: bool = False,
+        now: datetime | None = None,
     ) -> Conversation | None:
+        """Return an owned conversation only when it is not stale."""
         result = await self._session.execute(
             select(Conversation)
             .where(
                 Conversation.id == conversation_id,
                 Conversation.user_id == user_id,
                 Conversation.enterprise_id == enterprise_id,
+                Conversation.internal_user_id == internal_user_id,
+                Conversation.is_internal_user == is_internal_user,
+                _available_conversation_clause(now),
             )
             .options(selectinload(Conversation.messages))
         )
@@ -62,12 +90,18 @@ class ConversationRepository:
         *,
         user_id: int,
         enterprise_id: int,
+        internal_user_id: str | None = None,
+        is_internal_user: bool = False,
+        now: datetime | None = None,
     ) -> list[Conversation]:
         result = await self._session.execute(
             select(Conversation)
             .where(
                 Conversation.user_id == user_id,
                 Conversation.enterprise_id == enterprise_id,
+                Conversation.internal_user_id == internal_user_id,
+                Conversation.is_internal_user == is_internal_user,
+                _available_conversation_clause(now),
             )
             .options(selectinload(Conversation.messages))
             .order_by(Conversation.updated_at.desc())
@@ -151,6 +185,8 @@ class ConversationRepository:
         *,
         user_id: int,
         enterprise_id: int,
+        internal_user_id: str | None = None,
+        is_internal_user: bool = False,
     ) -> dict[str, int]:
         conversation_count = await self._session.scalar(
             select(func.count())
@@ -158,6 +194,8 @@ class ConversationRepository:
             .where(
                 Conversation.user_id == user_id,
                 Conversation.enterprise_id == enterprise_id,
+                Conversation.internal_user_id == internal_user_id,
+                Conversation.is_internal_user == is_internal_user,
             )
         )
         message_count = await self._session.scalar(
@@ -167,6 +205,8 @@ class ConversationRepository:
             .where(
                 Conversation.user_id == user_id,
                 Conversation.enterprise_id == enterprise_id,
+                Conversation.internal_user_id == internal_user_id,
+                Conversation.is_internal_user == is_internal_user,
             )
         )
         return {

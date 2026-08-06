@@ -24,6 +24,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 # directly; wrapping them would break the docs pages.
 _EXCLUDED_PATHS = frozenset({"/openapi.json", "/docs", "/redoc"})
 
+ENVELOPE_STATUS_HEADER = "x-envelope-status"
+
 
 def build_envelope(status_code: int, payload: object) -> dict:
     """Wrap a decoded response payload in the meta/data envelope.
@@ -91,7 +93,20 @@ class ResponseEnvelopeMiddleware:
                     return
 
                 raw = b"".join(body_parts)
+                headers = MutableHeaders(raw=list(start_message.get("headers", [])))
+
+                # A handler that masked its status as 200 declares the real one
+                # here. Anything unparseable falls back to the transport status
+                # rather than failing the response outright.
                 status_code = start_message["status"]
+                declared = headers.get(ENVELOPE_STATUS_HEADER)
+                if declared is not None:
+                    del headers[ENVELOPE_STATUS_HEADER]
+                    try:
+                        status_code = int(declared)
+                    except ValueError:
+                        pass
+
                 try:
                     payload = json.loads(raw) if raw else None
                 except ValueError:
@@ -100,7 +115,6 @@ class ResponseEnvelopeMiddleware:
                 envelope = build_envelope(status_code, payload)
                 new_body = json.dumps(envelope, default=str).encode("utf-8")
 
-                headers = MutableHeaders(raw=list(start_message.get("headers", [])))
                 headers["content-length"] = str(len(new_body))
                 await send({**start_message, "headers": headers.raw})
                 await send({"type": "http.response.body", "body": new_body})

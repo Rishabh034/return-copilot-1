@@ -187,9 +187,16 @@ def rows_to_transcript(
     their tool_calls and thinking, and tool rows keep their results. Reads only
     from the DB rows (raw_response + columns), so it works without the
     in-memory tool result store.
+
+    Every row carries a `turn` index that increments on each human row, so a
+    client can group the several ai/tool rows an agentic loop produces back
+    into the single answer the live stream displayed.
     """
     entries: list[dict[str, Any]] = []
+    turn = 0
     for row in sorted(rows, key=lambda r: r.seq):
+        if row.role == "human":
+            turn += 1
         content = row.content
         reasoning: str | None = None
         tool_calls: list[dict[str, Any]] | None = None
@@ -231,6 +238,7 @@ def rows_to_transcript(
         entries.append(
             {
                 "seq": row.seq,
+                "turn": turn,
                 "role": row.role,
                 "status": row.status,
                 "content": content,

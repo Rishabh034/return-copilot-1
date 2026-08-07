@@ -20,6 +20,7 @@ class TranscriptToolCall(BaseModel):
 
 class TranscriptMessage(BaseModel):
     seq: int
+    turn: int  # increments per human message; groups the ai/tool rows it produced
     role: str  # "human" | "ai" | "tool"
     status: str  # "complete" | "partial"
     content: str | None = None

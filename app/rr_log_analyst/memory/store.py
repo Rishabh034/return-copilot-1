@@ -49,7 +49,14 @@ def _message_time(message: BaseMessage) -> str | None:
 
 
 def to_display_messages(messages: list[BaseMessage]) -> list[dict[str, Any]]:
-    """Collapse LangChain messages to simple user/assistant pairs for the API and UI."""
+    """Collapse LangChain messages to simple user/assistant pairs for the API and UI.
+
+    An agentic turn produces one AI message per tool iteration; they are merged
+    into the single assistant reply the user saw streamed, so replayed history
+    keeps one assistant message per question. The merged entry carries the seq
+    of the turn's last AI message — the same anchor the stream's `done` event
+    reports for feedback.
+    """
     display: list[dict[str, Any]] = []
 
     for message in messages:
@@ -69,15 +76,28 @@ def to_display_messages(messages: list[BaseMessage]) -> list[dict[str, Any]]:
             thinking = _extract_thinking(message.content)
             text = _extract_text(message.content)
             if text:
-                display.append(
-                    {
-                        "role": "assistant",
-                        "content": text,
-                        "message_time": message_time,
-                        "reasoning": thinking if thinking else None,
-                        "seq": message.additional_kwargs.get("seq"),
-                    }
-                )
+                seq = message.additional_kwargs.get("seq")
+                previous = display[-1] if display else None
+                if previous is not None and previous["role"] == "assistant":
+                    previous["content"] = f"{previous['content']}\n\n{text}"
+                    if thinking:
+                        previous["reasoning"] = (
+                            f"{previous['reasoning']}\n\n{thinking}"
+                            if previous["reasoning"]
+                            else thinking
+                        )
+                    previous["message_time"] = message_time or previous["message_time"]
+                    previous["seq"] = seq if seq is not None else previous["seq"]
+                else:
+                    display.append(
+                        {
+                            "role": "assistant",
+                            "content": text,
+                            "message_time": message_time,
+                            "reasoning": thinking if thinking else None,
+                            "seq": seq,
+                        }
+                    )
         # ToolMessage and SystemMessage are internal — not shown in the chat UI.
 
     return display

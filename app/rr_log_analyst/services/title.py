@@ -5,6 +5,7 @@ import logging
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.clients.llm import create_secondary_chat_model
+from app.clients.observability import langchain_trace_config
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,8 @@ async def generate_conversation_title(
             [
                 SystemMessage(content=_TITLE_SYSTEM_PROMPT),
                 HumanMessage(content=prompt),
-            ]
+            ],
+            config=langchain_trace_config(),
         )
         title = _coerce_text(response.content).strip().strip('"').strip()
         if not title:

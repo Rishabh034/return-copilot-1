@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.clients.clickpost import ClickpostClient
+from app.clients.observability import init_langfuse, shutdown_langfuse
 from app.config import settings
 from app.dependencies.auth import AgentAuthError
 from app.exceptions import AppError, app_error_handler
@@ -67,6 +68,7 @@ async def agent_auth_error_handler(_request, exc: AgentAuthError) -> JSONRespons
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    init_langfuse()
     app.state.clickpost_client = ClickpostClient(
         base_url=settings.clickpost_base_url,
         timeout=settings.rr_analyst_tool_timeout,
@@ -82,6 +84,7 @@ async def lifespan(app: FastAPI):
         if log_uploader:
             # last so shutdown logs from the lines above still make the flush
             await log_uploader.aclose()
+        shutdown_langfuse()
 
 
 def create_app() -> FastAPI:

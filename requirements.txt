@@ -40,3 +40,7 @@ boto3>=1.34,<2
 PyJWT==2.13.0
 cryptography==46.0.0
 confluent-kafka==2.8.0
+# LLM tracing to self-hosted Langfuse: langfuse.langchain.CallbackHandler for
+# app/clients/llm.py, AnthropicInstrumentor (OTEL) for app/agenticintegrations/client.py
+langfuse==4.14.3
+opentelemetry-instrumentation-anthropic==0.62.1

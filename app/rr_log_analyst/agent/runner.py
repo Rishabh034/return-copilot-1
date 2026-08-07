@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from app.clients.clickpost import ClickpostAPIError, ClickpostPermissionError
 from app.clients.llm import create_chat_model, create_secondary_chat_model
+from app.clients.observability import langchain_trace_config
 from app.config import settings
 from app.rr_log_analyst.agent.context import merge_usage, prepare_messages, serialize_usage
 from app.rr_log_analyst.agent.result_query import (
@@ -355,7 +356,9 @@ class AgentRunner:
             accumulated: AIMessageChunk | None = None
 
             try:
-                async for chunk in runnable.astream(llm_input):
+                async for chunk in runnable.astream(
+                    llm_input, config=langchain_trace_config(conversation_id)
+                ):
                     thinking_delta = _extract_thinking_delta(chunk.content)
                     if thinking_delta:
                         yield ("thinking_delta", {"delta": thinking_delta})

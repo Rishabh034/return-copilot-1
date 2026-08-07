@@ -14,6 +14,8 @@ _AWS_SECRET_TO_ENV = {
     "CLICKHELP_DATABASE_URL": "DATABASE_URL",
     "CLICKHELP_POSTGRES_PASSWORD": "POSTGRES_PASSWORD",
     "CLICKHELP_AI_AGENT_JWT_PUBLIC_KEY": "AGENT_JWT_PUBLIC_KEY",
+    "CLICKHELP_LANGFUSE_PUBLIC_KEY": "LANGFUSE_PUBLIC_KEY",
+    "CLICKHELP_LANGFUSE_SECRET_KEY": "LANGFUSE_SECRET_KEY",
 }
 
 _from_aws = []
@@ -94,6 +96,13 @@ class Settings(BaseSettings):
     log_s3_prefix: str = "logs/clickpost-ai-projects"
     log_upload_interval_minutes: int = 10
     capture_access_logs: bool = True  # route uvicorn access/server logs through our logger
+
+    # LLM tracing via self-hosted Langfuse. Off by default so local dev and any
+    # environment without a Langfuse instance/keys configured is unaffected.
+    langfuse_enabled: bool = False
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: str | None = None
+    langfuse_base_url: str = "http://10.100.41.62:3000"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

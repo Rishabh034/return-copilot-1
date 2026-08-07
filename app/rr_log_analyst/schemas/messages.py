@@ -11,7 +11,3 @@ class SendMessageRequest(BaseModel):
     message_time: str | None = None
     internal_user_id :str | None = Field(None, description="Clickpost internal user id")
     is_internal_user: bool = Field(False, description="Is the user an internal user")
-    use_extra_tokens: bool = Field(
-        False,
-        description="Claim the one-time extra-token allowance for this window",
-    )

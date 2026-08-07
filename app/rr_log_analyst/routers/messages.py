@@ -147,18 +147,6 @@ async def send_message(
 
     async with AsyncSessionLocal() as session:
         token_repo = UserTokenRepository(session)
-        if body.use_extra_tokens:
-            try:
-                await token_repo.add_extra_tokens(
-                    user_id=user_id,
-                    enterprise_id=enterprise_id,
-                    is_internal_user=is_internal_user,
-                    internal_user_id=internal_user_id,
-                )
-            except ValueError as exc:
-                await session.rollback()
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
-
         allowed = await token_repo.can_start(
             user_id=user_id,
             enterprise_id=enterprise_id,

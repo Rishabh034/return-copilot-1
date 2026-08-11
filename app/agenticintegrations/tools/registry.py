@@ -18,7 +18,7 @@ from app.agenticintegrations.tools.handlers import http_request_tool, log_api_te
 
 logger = logging.getLogger(__name__)
 
-SCHEMAS_DIR = Path(__file__).parent / "tools" / "schemas"
+SCHEMAS_DIR = Path(__file__).parent / "schemas"
 
 # Map tool name (must match "name" field in the schema JSON) -> handler function.
 # Handler signature: (tool_input: dict) -> str | dict  (JSON-serializable result)

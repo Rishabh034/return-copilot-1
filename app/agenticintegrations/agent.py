@@ -14,7 +14,7 @@ from .tools.registry import load_tool_schemas, execute_tool_calls
 
 logger = logging.getLogger(__name__)
 
-MAX_TOOL_ITERATIONS = 10  # guard against infinite tool-call loops
+MAX_TOOL_ITERATIONS = 50  # guard against infinite tool-call loops
 
 
 class Agent:
@@ -47,10 +47,13 @@ class Agent:
             self.messages.append({"role": "assistant", "content": response.content})
 
             if response.stop_reason != "tool_use":
+                if response.stop_reason == "max_tokens":
+                    logger.warning("Hit MAX TOKENS without reaching a final answer")
+
                 return self._extract_text(response.content)
 
             tool_use_blocks = [block for block in response.content if block.type == "tool_use"]
-            print("Model requested %d tool call(s): %s",
+            logger.info("Model requested %d tool call(s): %s",
                         len(tool_use_blocks), [b.name for b in tool_use_blocks])
 
             tool_results = execute_tool_calls(tool_use_blocks, additional_tool_params)

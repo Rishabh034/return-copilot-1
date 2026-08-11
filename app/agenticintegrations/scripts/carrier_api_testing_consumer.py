@@ -6,6 +6,12 @@ import sys
 import time
 from typing import List
 
+logging.basicConfig(
+    level="INFO",
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    stream=sys.stdout
+)
+
 import boto3
 from pydantic import ValidationError
 
@@ -22,12 +28,6 @@ from app.agenticintegrations.utility.build_postman_collection import build_postm
 from app.agenticintegrations.utility.jira_service import JiraService
 from app.agenticintegrations.utility.kafka_service import KafkaService
 
-logging.basicConfig(
-    level="INFO",
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    stream=sys.stdout
-)
-
 logger = logging.getLogger(__name__)
 
 
@@ -37,7 +37,7 @@ class CarrierAPITestingConsumer:
             client=ClaudeClient(
                 api_key=settings.AGENTIC_INTEGRATIONS_ANTHROPIC_API_KEY,
                 model="claude-sonnet-4-6",
-                max_tokens=2048
+                max_tokens=4096
             )
         )
         self._jira_service = JiraService()
@@ -49,13 +49,11 @@ class CarrierAPITestingConsumer:
             aws_secret_access_key=settings.AGENTIC_INTEGRATIONS_AWS_SECRET_ACCESS_KEY
         )
 
-        file_url = s3.upload_file(
+        s3.upload_file(
             local_file,
             settings.DEFAULT_S3_BUCKET,
             s3_key_name
         )
-
-        return file_url
 
     def _prepare_failed_requests_file(self, result_collector: ResultCollector, carrier_partner_name: str):
         results: List[APITestLog] = result_collector.get_results()
@@ -93,7 +91,8 @@ class CarrierAPITestingConsumer:
             # Upload to S3
             s3_key = f"agentic_integrations/{carrier_partner_name.upper()}/failed_requests_data_" \
                      f"{carrier_partner_name}_{time.time()}.csv"
-            failed_requests_file = self._upload_to_s3(local_file=file_path, s3_key_name=s3_key)
+            self._upload_to_s3(local_file=file_path, s3_key_name=s3_key)
+            failed_requests_file = f"https://{settings.DEFAULT_S3_BUCKET}.s3.ap-southeast-1.amazonaws.com/{s3_key}"
 
         return failed_requests_file
 
@@ -106,7 +105,8 @@ class CarrierAPITestingConsumer:
         # Upload to S3
         s3_key = f"agentic_integrations/{carrier_partner_name.upper()}/" \
                  f"postman_collection_{carrier_partner_name}_{time.time()}.json"
-        postman_collection_file = self._upload_to_s3(local_file=file_path, s3_key_name=s3_key)
+        self._upload_to_s3(local_file=file_path, s3_key_name=s3_key)
+        postman_collection_file = f"https://{settings.DEFAULT_S3_BUCKET}.s3.ap-southeast-1.amazonaws.com/{s3_key}"
 
         return postman_collection_file
 
@@ -218,6 +218,21 @@ KafkaService.start_consumer(
     group_id="agentic_integrations_carrier_test_consumer",
     consumer_callback=callback
 )
+
+# Local testing
+# consumer = CarrierAPITestingConsumer()
+# payload = {
+#     "api_document_type": "PDF",
+#     "api_document":
+#         "https://pyck-res-bucket.s3.ap-southeast-1.amazonaws.com/courier_documentation/beingships-documentation.pdf",
+#     "test_credentials": {
+#         "api_key": "Lorem ipsum"
+#     },
+#     "carrier_partner_name": "Being Ships",
+#     "jira_ticket_id": "CPD-9403"
+# }
+# consumer.consume(payload)
+
 
 
 

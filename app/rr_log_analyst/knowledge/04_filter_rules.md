@@ -11,7 +11,8 @@ Stored in `RecommendationInclusionFilters` (selector app). The engine loads rows
 ## Role in the Pipeline
 ```
 Pre-filter checks (serviceable accounts)
-Pre-filter checks (serviceable accounts)
+        ↓
+  Attribute Layer (carrier exception)  — CP_ID eliminations; see 15_carrier_attribute_layer.md
         ↓
   Filter Rules       ← THIS LAYER
         ↓
@@ -181,4 +182,9 @@ Source of truth: `RecsV2.evaluate_operator2` in `selector/service/recsv2.py`.
 2. `field_name`, `field_type`, `field_value` are legacy — always send `null`, `""`, `null`
 3. A condition only matches if the order data actually contains the key (missing/None values fail the condition)
 4. When no OL matches, the filter pool's final order is decided by **PBA scoring**, not by `account_list` order
-5. The matched rule's name appears in the RR log as `filters_ran.clickpost_defined_and_custom_rule_matched`; all matched rules (with `sequence`, `rule_name`, `rule_priority`, `has_serviceable_accounts`) appear in `3_clickpost_filters_rules_list`
+5. The matched rule's name appears in the RR log as `filters_ran.clickpost_defined_and_custom_rule_matched`; all matched rules appear in `3_clickpost_filters_rules_list`. Each entry includes at least `sequence`, `rule_name`, `rule_priority`, `has_serviceable_accounts`. Newer logs also include per-filter LD runtime fields when relevant:
+   - `allocation_type` — `"PERCENTAGE"` or `"ABSOLUTE_CAPPING"`
+   - `load_distribution_filter_enabled` — whether this filter has per-filter LD turned on
+   - `load_distribution_applied` — whether LD ran and reshaped the pool for **this** request
+   - `load_distribution_account_config` — per-account snapshot (`account_id`, `allocation_value`, `enterprise_account_lane_shipment_count`, `deviation`); may be present even when `applied` is false
+   Prefer these RR-log fields over `get_load_distribution_filter_config` when explaining a specific order. See `12_load_distribution.md`.

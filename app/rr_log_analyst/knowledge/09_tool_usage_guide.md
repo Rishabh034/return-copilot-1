@@ -47,12 +47,34 @@ The enterprise you are assisting (name + `enterprise_user_profile_id`) and the c
 | Rules for pincode | `find_rules_for_pincode` | `search_filter_rules(pickup_pincode=...)` |
 | Rules for carrier | `get_account_info` → `find_rules_for_carrier` | `search_filter_rules` |
 
+### Attribute Layer (carrier exception / carrier attribute rules)
+
+Runs **after** serviceability and **before** Filter Rules. Scoped to `courier_partner_id` (CP_ID); eliminates accounts via `exclusion_list` when conditions match. **Not** Filter or OL rules — do not use `list_filter_rules` / `find_rule` for these.
+
+| Question | PRIMARY | Notes |
+|----------|---------|-------|
+| List all Attribute Layer rules | `list_carrier_exception_rules` | Full shaped rules (conditions, exclusion_list, enabled, priority) |
+| Find by rule id | `find_carrier_exception_rule` | `query` = id, `match_category=RULE_ID` |
+| Find by rule name | `find_carrier_exception_rule` | `query` = name, `match_category=RULE_NAME` |
+| Rules for a carrier partner | `find_carrier_exception_rule` | `query` = CP_ID and `match_category=COURIER_PARTNER_ID`; or resolve name → CP_ID via `search_courier_partners` first |
+| Why were Delhivery accounts gone before filters? | Resolve CP_ID → `find_carrier_exception_rule` | Check enabled rules, conditions vs shipment attrs, union of `exclusion_list` |
+| What accounts does this Attribute Layer rule eliminate? | `find_carrier_exception_rule` | Read `exclusion_list`; map IDs with `get_account_info` if needed |
+
+**Evaluation reminder:** all **enabled** rules for that CP_ID are evaluated (no short-circuit); eliminations are the **union** across matches; disabled rules do not count. Full elimination of a CP_ID means that partner never reaches Filters.
+
+**Required clarification:** if the user provides an unlabeled numeric ID in an Attribute Layer question, ask **"Is this a rule ID or a courier partner ID (CP_ID)?"** before calling the tool. Never infer the category or search both. The user’s answer determines `match_category`.
+
+See `15_carrier_attribute_layer.md` for pipeline position, outcome states, and differences from Filter Rules.
+
 ### Flow config & load distribution
 
 | Question | PRIMARY | SUB-TOOLs if needed |
 |----------|---------|---------------------|
 | Pipeline toggles | `get_enterprise_flow_config` | `get_flow_config_flag(flag=...)` |
-| LD targets | `get_load_distribution_config` | pass `account_id` to filter one carrier |
+| Did per-filter LD apply on this order? | `fetch_rr_log` / `get_rr_log_pipeline(stage="3_clickpost_filters_rules_list")` | Read `load_distribution_applied` / `load_distribution_account_config` on the matched filter |
+| Why did LD drop / keep account X? | Same RR log fields + `accounts_after_load_distribution_filter` | `get_load_distribution_filter_config` only if LD fields missing (older logs) |
+| LD targets (terminal / dashboard) | `get_load_distribution_config` | pass `account_id` to filter one carrier |
+| LD targets for a filter rule | Prefer RR log `load_distribution_account_config` when present | else `search_filter_rules` → `get_load_distribution_filter_config(filter_id)` |
 
 ### Serviceability
 

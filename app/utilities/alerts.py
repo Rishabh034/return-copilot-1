@@ -1,4 +1,4 @@
-"""Best-effort Slack alerting for unhandled backend exceptions.
+"""Slack alerting for unhandled backend exceptions.
 
 Separate from app/rr_log_analyst/memory/slack_notifier.py, which posts user
 feedback to a different channel. Synchronous (uses `requests`); call via

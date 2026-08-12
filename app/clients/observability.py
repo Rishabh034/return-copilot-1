@@ -50,9 +50,6 @@ def init_langfuse() -> None:
     client = get_client()
     AnthropicInstrumentor().instrument()
 
-    # auth_check() makes a real call to the Langfuse host — this is what turns
-    # "no traces showed up" into an explicit, grep-able signal at boot instead
-    # of a silent failure discovered only by its absence in the UI.
     try:
         if client.auth_check():
             logger.info("Langfuse tracing enabled (host=%s)", settings.langfuse_base_url)
@@ -99,7 +96,7 @@ def trace_span(name: str, **kwargs):
     Any LangChain calls made inside the block (via langchain_trace_config)
     nest under this span automatically. On disabled/uninitialized tracing, or
     on ANY error opening the span (bad SDK call, auth, network), yields None
-    instead of raising — a broken observability call must never take down the
+    instead of raising - a broken observability call must never take down the
     actual request. This matters especially inside StreamingResponse
     generators: once headers are sent, an exception here can't be recovered
     from the way a normal error handler would.

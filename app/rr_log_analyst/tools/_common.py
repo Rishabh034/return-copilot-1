@@ -2,6 +2,28 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.rr_log_analyst.tools.context import ToolContext
+
+
+async def cached_fetch(context: ToolContext, key: tuple, fetch) -> Any:
+    """Memoize a raw Clickpost payload for the current request cycle.
+
+    Several tools pull the same endpoints: the accounts list backs both
+    `get_account_info` and every load-distribution call, and `find_rule` re-pulled
+    the whole rule set on every invocation. Cached on the ToolContext, which the
+    runner rebuilds per user message, so repeated reads within one agent loop are
+    free while the next message still sees fresh data.
+
+    Caches the *raw* payload, not a shaped one — callers shape the same response
+    differently (accounts become a list for one tool and an id lookup for another).
+    """
+    cache = context.raw_fetch_cache
+    if key in cache:
+        return cache[key]
+    value = await fetch()
+    cache[key] = value
+    return value
+
 
 def as_list(raw: Any) -> list:
     """Coerce a Clickpost list response into a plain list.
@@ -22,25 +44,77 @@ def as_list(raw: Any) -> list:
     return []
 
 
-def compact_rule_summary(shaped: dict) -> dict:
-    """Return a minimal index entry from an already-shaped rule."""
-    summary: dict = {}
-    for key in ("id", "name", "priority", "enabled"):
+_VALUE_SAMPLES = 5
+_VALUE_PREFIXES = 12
+
+
+def _split_condition_value(value: Any) -> list:
+    """Normalize a condition value into a list of individual values."""
+    if isinstance(value, list):
+        return [item for item in value if item not in (None, "")]
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",")]
+        return [part for part in parts if part]
+    return [value] if value not in (None, "") else []
+
+
+def summarize_condition_value(value: Any) -> dict:
+    """Describe a condition's value without reproducing an unbounded list.
+
+    A single pincode `IN` condition can hold 1000+ values (tens of thousands of
+    chars), which is what makes raw rules too large to hand to the model. The
+    count plus a few samples and the distinct prefixes answer "which lanes does
+    this cover" — the actual question — at a fraction of the size.
+    """
+    items = _split_condition_value(value)
+    if not items:
+        return {}
+    if len(items) == 1:
+        return {"value": items[0]}
+
+    summary: dict = {"value_count": len(items), "value_samples": items[:_VALUE_SAMPLES]}
+    prefixes = sorted(
+        {
+            f"{str(item)[:3]}xxx"
+            for item in items
+            if str(item).isdigit() and len(str(item)) >= 4
+        }
+    )
+    if prefixes:
+        summary["value_prefixes"] = prefixes[:_VALUE_PREFIXES]
+        if len(prefixes) > _VALUE_PREFIXES:
+            summary["value_prefixes_truncated"] = len(prefixes)
+    return summary
+
+
+def shape_rule_digest(shaped: dict) -> dict:
+    """Shape a rule with its conditions intact but its value lists bounded.
+
+    Carries what an analyst needs to explain a rule without a follow-up call —
+    operators, what each condition tests, how much it covers, and the eligible
+    accounts. Only the complete raw value list is omitted; `find_rule` has it.
+    """
+    digest: dict = {}
+    for key in ("id", "name", "rule_type", "priority", "enabled", "updated_at"):
         val = shaped.get(key)
         if val is not None:
-            summary[key] = val
+            digest[key] = val
+
+    accounts = shaped.get("account_list")
+    if accounts:
+        digest["account_list"] = accounts
+
     conditions = shaped.get("rule")
     if isinstance(conditions, list):
-        summary["condition_keys"] = sorted(
+        digest["conditions"] = [
             {
-                k
-                for cond in conditions
-                if isinstance(cond, dict)
-                for k in cond
-                if k not in ("id", "_id")
+                **{k: cond[k] for k in ("key", "op") if cond.get(k) is not None},
+                **summarize_condition_value(cond.get("value")),
             }
-        )
-    return summary
+            for cond in conditions
+            if isinstance(cond, dict)
+        ]
+    return digest
 
 
 def shape_rule(rule: dict) -> dict:
@@ -62,26 +136,27 @@ def shape_carrier_exception_rule(rule: dict) -> dict:
     shaped = {
         "id": rule.get("id"),
         "courier_partner_id": rule.get("courier_partner_id"),
-        "rule_name" : rule.get("rule_name"),
-        "rule" : rule.get("rule") or [],
-        "exclusion_list" : rule.get("exclusion_list") or [],
+        "rule_name": rule.get("rule_name"),
+        "priority": rule.get("priority"),
+        "rule": rule.get("rule") or [],
+        "exclusion_list": rule.get("exclusion_list") or [],
         "enabled": rule.get("enabled"),
         "updated_at": rule.get("updated_at"),
     }
-    
-    return {k:v for k,v in shaped.items() if v is not None and v != ""}
+
+    return {k: v for k, v in shaped.items() if v is not None and v != ""}
 
 FILTERS_RAN_KEYS = (
     "1_active_accounts_filter",
     "1_blacklisted_accounts",
     "2_serviceable_accounts_filter",
     "2_1_serviceable_oda_accounts_filter",
+    "2_3_1_attribute_rules_matched",
     "clickpost_defined_and_custom_rule_matched",
     "3_clickpost_filters_rules_list",
     "3_clickpost_define_and_custom_filters_accounts_applied",
     "3_clickpost_define_and_custom_filters_accounts",
     "accounts_after_load_distribution_filter",
-    "accounts_after_load_distribution",
     "accounts_after_load_distribution",
     "priority_list_account_names",
     "4_ordered_list_rules_list",

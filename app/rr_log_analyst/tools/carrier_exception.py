@@ -1,25 +1,41 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel,Field
+from pydantic import BaseModel, Field, model_validator
 
-from app.rr_log_analyst.tools._common import as_list,shape_carrier_exception_rule
+from app.rr_log_analyst.tools._common import as_list, shape_carrier_exception_rule
 from app.rr_log_analyst.tools.context import ToolContext
-from app.rr_log_analyst.tools.flow_config import EmptyInput
+
+MatchCategory = Literal["RULE_ID", "COURIER_PARTNER_ID", "RULE_NAME"]
 
 
-class FindCarrierExceptionRuleInput(BaseModel):
-    query: str = Field(
-        description="The exact rule id, courier_partner_id (CP_ID), or exact/partial rule name.",
-    )
-    match_category: Literal["RULE_ID", "COURIER_PARTNER_ID", "RULE_NAME"] = Field(
+class ListCarrierExceptionRulesInput(BaseModel):
+    query: str | None = Field(
+        default=None,
         description=(
-            "How to interpret query. If the user provides an unlabeled numeric ID, do not guess: "
-            "ask whether it is a rule ID or courier partner ID before calling this tool."
+            "Optional. Omit to list all Attribute Layer rules. When set, also pass "
+            "match_category to find by rule id, courier_partner_id (CP_ID), or rule name."
         ),
     )
+    match_category: MatchCategory | None = Field(
+        default=None,
+        description=(
+            "Required when query is set. How to interpret query: RULE_ID, COURIER_PARTNER_ID, "
+            "or RULE_NAME. If the user provides an unlabeled numeric ID, do not guess — ask "
+            "whether it is a rule ID or courier partner ID before calling."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _query_and_category_together(self) -> Self:
+        has_query = bool(self.query and self.query.strip())
+        if has_query and self.match_category is None:
+            raise ValueError("match_category is required when query is provided")
+        if self.match_category is not None and not has_query:
+            raise ValueError("query is required when match_category is provided")
+        return self
 
 
 def _rule_matches_id(rule: dict, rule_id: str) -> bool:
@@ -54,7 +70,7 @@ def _name_match_score(rule_name: str, query: str) -> int:
 def _resolve_rules_by_query(
     rules: list[dict],
     query: str,
-    match_category: Literal["RULE_ID", "COURIER_PARTNER_ID", "RULE_NAME"],
+    match_category: MatchCategory,
 ) -> dict[str, Any]:
     query = query.strip()
     if not query:
@@ -136,54 +152,43 @@ async def _fetch_carrier_exception_rules(context: ToolContext) -> list[dict]:
     return as_list(raw)
 
 
-async def _list_rules(context:ToolContext) -> dict[str,Any]:
+async def _list_rules(context: ToolContext) -> dict[str, Any]:
     raw_rules = await _fetch_carrier_exception_rules(context)
     rules = [shape_carrier_exception_rule(raw_rule) for raw_rule in raw_rules]
-    return {"total_rules": len(rules), "rules" : rules}
+    rules.sort(key=lambda r: (r.get("priority") is None, r.get("priority")))
+    return {"total_rules": len(rules), "rules": rules}
 
 
-
-async def _find_rule(
+async def _list_or_find(
     context: ToolContext,
-    query: str,
-    match_category: Literal["RULE_ID", "COURIER_PARTNER_ID", "RULE_NAME"],
+    query: str | None,
+    match_category: MatchCategory | None,
 ) -> dict[str, Any]:
     listed = await _list_rules(context)
+    if not query or not match_category:
+        return listed
     return _resolve_rules_by_query(listed["rules"], query, match_category)
 
 
 def build_tools(context: ToolContext) -> list[StructuredTool]:
-    async def list_carrier_exception_rules() -> dict[str, Any]:
-        return await _list_rules(context)
-    
-    async def find_carrier_exception_rule(
-        query: str,
-        match_category: Literal["RULE_ID", "COURIER_PARTNER_ID", "RULE_NAME"],
+    async def list_carrier_exception_rules(
+        query: str | None = None,
+        match_category: MatchCategory | None = None,
     ) -> dict[str, Any]:
-        return await _find_rule(context, query, match_category)
-    
+        return await _list_or_find(context, query, match_category)
+
     return [
         StructuredTool.from_function(
             coroutine=list_carrier_exception_rules,
             name="list_carrier_exception_rules",
             description=(
-                "PRIMARY — List all Attribute Layer (carrier exception / carrier attribute) rules "
-                "for the enterprise, ordered by priority. Each rule is scoped to a courier_partner_id "
-                "(CP_ID) and lists conditions plus exclusion_list (accounts eliminated when the rule "
-                "matches). Use when investigating why accounts under a carrier were dropped before "
-                "Filter rules, or when the user asks about Attribute Layer / carrier exception config."
+                "PRIMARY — Attribute Layer (carrier exception / carrier attribute) rules. "
+                "Omit query to list all rules for the enterprise (priority order). Pass query + "
+                "match_category (RULE_ID, COURIER_PARTNER_ID, or RULE_NAME) to find specific "
+                "rules. Each rule is scoped to a courier_partner_id (CP_ID) with conditions and "
+                "exclusion_list. If the user gives an unlabeled numeric ID, ask whether it is a "
+                "rule ID or CP_ID before calling — never infer the category."
             ),
-            args_schema=EmptyInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=find_carrier_exception_rule,
-            name="find_carrier_exception_rule",
-            description=(
-                "Find Attribute Layer rules using an explicit match category: RULE_ID, "
-                "COURIER_PARTNER_ID, or RULE_NAME. IMPORTANT: if the user provides an unlabeled "
-                "numeric ID, ask whether it is a rule ID or courier partner ID before calling "
-                "this tool. Never infer the category or try both automatically."
-            ),
-            args_schema=FindCarrierExceptionRuleInput,
+            args_schema=ListCarrierExceptionRulesInput,
         ),
     ]

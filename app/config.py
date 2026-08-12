@@ -44,17 +44,24 @@ class Settings(BaseSettings):
     clickpost_base_url: str = "https://internal.clickpost.in"
 
     rr_analyst_model: str = "claude-sonnet-4-6"
+    rr_analyst_temperature: float = 0.1
+    rr_analyst_secondary_temperature :float = 0.3
     rr_analyst_max_output_tokens: int = 8192
     rr_analyst_max_iterations: int = 10
     rr_analyst_tool_timeout: int = 30
 
-    rr_analyst_thinking_enabled: bool = True
+    rr_analyst_thinking_enabled: bool = False
     rr_analyst_thinking_budget_tokens: int = 2048
+
+    prompt_caching_enabled: bool = True
 
     rr_analyst_secondary_model: str = "claude-haiku-4-5"
     rr_analyst_secondary_max_output_tokens: int = 4048
     rr_analyst_scratchpad_enabled: bool = True
-    scratchpad_chunk_chars: int = 12_000  # max chars per raw data part / Haiku summarization call
+    scratchpad_chunk_chars: int = 48_000  
+    scratchpad_min_result_chars: int = 20_000
+    scratchpad_passthrough_max_chars: int = 400
+    scratchpad_max_concurrent_summaries: int = 8
     scratchpad_inline_max_chars: int = 80_000
     tool_result_query_max_chars: int = 8_000
 

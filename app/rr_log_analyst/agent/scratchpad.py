@@ -15,21 +15,22 @@ from app.rr_log_analyst.agent.context import merge_usage, serialize_usage
 
 logger = logging.getLogger(__name__)
 
-_SUMMARIZE_PART_PROMPT = """You are a tool-result note-taker. This is a separate summarization call for one stored data part.
-The full tool result was already fetched and stored; you are only reading this part.
+_SUMMARIZE_PART_PROMPT = """Extract decision-relevant evidence from the supplied source segment.
+Preserve only what an allocation analyst needs to decide next steps.
 
 Rules:
-- Preserve field names, IDs, counts, rule names, account names exactly
-- Do NOT interpret or recommend — record what the data contains
-- Use compact key: value / bullet structure, as raw as practical
-- Record every field present in this part (including partial JSON fragments)
+- Record only decision-relevant fields: stage/status, rule IDs/names and their match outcome,
+  courier/account identifiers, and any explicit pass/fail or error reason
+- Omit fields that are purely descriptive, redundant, or not useful for deciding next steps
+- Preserve field names, IDs, and values you do record exactly — do NOT interpret or recommend
+- Use compact key: value / bullet structure
 - This part is independent — summarize only what is shown below
 
-Tool: {tool_name} ({args_summary})
-Stored data part {part_index}/{part_total}:
+Source: {tool_name} ({args_summary})
+Segment {part_index}/{part_total}:
 {data_part}
 
-Return ONLY the scratchpad notes for this part."""
+Return only the compact evidence summary."""
 
 
 @dataclass
@@ -54,13 +55,29 @@ def chunk_json_result(result: dict[str, Any], max_chars: int | None = None) -> l
     chunks: list[str] = []
     for key, value in result.items():
         if isinstance(value, list) and value:
+            # Greedily pack items into as few chunks as fit under the limit —
+            # one item per chunk wastes a whole Haiku call on items that are
+            # a fraction of scratchpad_chunk_chars (e.g. dozens of small rules).
+            batch: list[Any] = []
             for item in value:
+                candidate = batch + [item]
+                if len(json.dumps({key: candidate}, default=str)) <= limit:
+                    batch = candidate
+                    continue
+
+                if batch:
+                    chunks.append(json.dumps({key: batch}, default=str))
+                    batch = [item]
+                    if len(json.dumps({key: batch}, default=str)) <= limit:
+                        continue
+
+                # this single item alone exceeds the limit — slice it directly
                 piece = json.dumps({key: [item]}, default=str)
-                if len(piece) <= limit:
-                    chunks.append(piece)
-                else:
-                    for offset in range(0, len(piece), limit):
-                        chunks.append(piece[offset : offset + limit])
+                for offset in range(0, len(piece), limit):
+                    chunks.append(piece[offset : offset + limit])
+                batch = []
+            if batch:
+                chunks.append(json.dumps({key: batch}, default=str))
             continue
 
         piece = json.dumps({key: value}, default=str)
@@ -105,21 +122,20 @@ def build_compact_envelope(
     inline_limit = settings.scratchpad_inline_max_chars
     envelope: dict[str, Any] = {
         "result_id": result_id,
-        "tool": tool_name,
-        "raw_data_parts": len(raw_data_parts),
-        "scratchpad_batches": len(batches),
-        "scratchpad_total_chars": len(scratchpad),
+        "source": tool_name,
+        "source_segments": len(raw_data_parts),
+        "summary_segments": len(batches),
+        "summary_chars": len(scratchpad),
         "note": (
-            "Full tool JSON and all raw data parts are stored first, then scratchpad batches "
-            "from separate Haiku calls. Use query_raw_data_part(result_id, part_index) for "
-            "fetched source data, query_scratchpad_batch for one summary batch, "
-            "query_full_scratchpad for the complete scratchpad, or query_tool_result for JSON keyword slices."
+            "Use inspect_evidence(result_id, keywords=..., batch_index=...) to examine "
+            "relevant evidence, or inspect_source_segment(result_id, part_index) when a "
+            "specific source segment is needed."
         ),
     }
     if len(scratchpad) <= inline_limit:
-        envelope["scratchpad"] = scratchpad
+        envelope["evidence_summary"] = scratchpad
     else:
-        envelope["scratchpad_stored"] = True
+        envelope["summary_available"] = True
     return envelope
 
 
@@ -158,46 +174,51 @@ async def summarize_raw_data_parts(
     args_text = _args_summary(tool_args)
     part_total = len(raw_data_parts)
 
-    logger.info(
-        "Scratchpad summarization tool=%s: %d stored data parts → %d parallel Haiku calls",
-        tool_name,
-        part_total,
-        part_total,
-    )
-
-    prompts = [
-        _SUMMARIZE_PART_PROMPT.format(
-            tool_name=tool_name,
-            args_summary=args_text,
-            part_index=index,
-            part_total=part_total,
-            data_part=data_part,
-        )
-        for index, data_part in enumerate(raw_data_parts, start=1)
+    # A part already smaller than the summarization prompt itself is its own best=
+    passthrough_limit = settings.scratchpad_passthrough_max_chars
+    llm_indexes = [
+        index for index, part in enumerate(raw_data_parts) if len(part) > passthrough_limit
     ]
 
-    async def _summarize_one(prompt: str, index: int) -> str:
+    logger.info(
+        "Scratchpad summarization tool=%s: %d stored data parts → %d Haiku calls "
+        "(%d passed through verbatim, max %d concurrent)",
+        tool_name,
+        part_total,
+        len(llm_indexes),
+        part_total - len(llm_indexes),
+        settings.scratchpad_max_concurrent_summaries,
+    )
+
+    semaphore = asyncio.Semaphore(max(1, settings.scratchpad_max_concurrent_summaries))
+
+    async def _summarize_one(index: int):
+        prompt = _SUMMARIZE_PART_PROMPT.format(
+            tool_name=tool_name,
+            args_summary=args_text,
+            part_index=index + 1,
+            part_total=part_total,
+            data_part=raw_data_parts[index],
+        )
         try:
-            response = await llm.ainvoke(
-                [HumanMessage(content=prompt)], config=langchain_trace_config(conversation_id)
-            )
-            return response
+            # Bound the fan-out: an unbounded gather over dozens of parts
+            # self-throttles into retries and long tail latency.
+            async with semaphore:
+                return await llm.ainvoke([HumanMessage(content=prompt)])
         except Exception:
             logger.exception(
                 "Scratchpad Haiku summarization failed on part %d/%d for tool %s",
-                index,
+                index + 1,
                 part_total,
                 tool_name,
             )
             raise
 
-    responses = await asyncio.gather(
-        *[_summarize_one(prompt, i) for i, prompt in enumerate(prompts, start=1)]
-    )
+    responses = await asyncio.gather(*[_summarize_one(index) for index in llm_indexes])
 
-    batch_summaries: list[str] = []
-    for response in responses:
-        batch_summaries.append(_extract_text(response.content).strip())
+    batch_summaries: list[str] = list(raw_data_parts)
+    for index, response in zip(llm_indexes, responses):
+        batch_summaries[index] = _extract_text(response.content).strip()
         usage = serialize_usage(response.usage_metadata)
         total_usage = merge_usage(total_usage, usage)
 

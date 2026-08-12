@@ -13,6 +13,26 @@ from app.rr_log_analyst.memory.tool_results import tool_result_store
 logger = logging.getLogger(__name__)
 
 
+def build_system_message(system_prompt: str) -> SystemMessage:
+    """System message, marked as a prompt-cache breakpoint when caching is on.
+
+    A breakpoint caches the whole prefix before it — for Anthropic that ordering
+    is tools, then system — so this single block covers the bound tool schemas
+    plus the knowledge-base prompt, which are identical on every iteration.
+    """
+    if not settings.prompt_caching_enabled:
+        return SystemMessage(content=system_prompt)
+    return SystemMessage(
+        content=[
+            {
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+    )
+
+
 def serialize_usage(usage_metadata: UsageMetadata | None) -> dict[str, int] | None:
     """Normalize Anthropic usage_metadata from a ChatAnthropic response."""
     if not usage_metadata:
@@ -21,11 +41,25 @@ def serialize_usage(usage_metadata: UsageMetadata | None) -> dict[str, int] | No
     input_tokens = usage_metadata.get("input_tokens") or 0
     output_tokens = usage_metadata.get("output_tokens") or 0
     total_tokens = usage_metadata.get("total_tokens") or (input_tokens + output_tokens)
+    # LangChain folds cache reads/writes into input_tokens, so the only way to see
+    # whether caching actually hit is to carry these details through separately.
+    details = usage_metadata.get("input_token_details") or {}
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
+        "cache_read_input_tokens": details.get("cache_read") or 0,
+        "cache_creation_input_tokens": details.get("cache_creation") or 0,
     }
+
+
+_USAGE_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+)
 
 
 def merge_usage(
@@ -36,11 +70,7 @@ def merge_usage(
         return right
     if not right:
         return left
-    return {
-        "input_tokens": left["input_tokens"] + right["input_tokens"],
-        "output_tokens": left["output_tokens"] + right["output_tokens"],
-        "total_tokens": left["total_tokens"] + right["total_tokens"],
-    }
+    return {field: (left.get(field) or 0) + (right.get(field) or 0) for field in _USAGE_FIELDS}
 
 
 def estimate_tokens(text: str | None) -> int:
@@ -85,16 +115,20 @@ def _compact_tool_message_content(content: str, conversation_id: str) -> str:
             )
         )
 
-    scratchpad = parsed.get("scratchpad")
-    if isinstance(scratchpad, str) and len(scratchpad) > settings.scratchpad_inline_max_chars:
+    summary = parsed.get("evidence_summary", parsed.get("scratchpad"))
+    if isinstance(summary, str) and len(summary) > settings.scratchpad_inline_max_chars:
         return json.dumps(
             {
                 "result_id": result_id,
-                "tool": parsed.get("tool", ""),
-                "scratchpad_stored": True,
-                "scratchpad_total_chars": len(scratchpad),
-                "scratchpad_batches": parsed.get("scratchpad_batches", 1),
-                "note": parsed.get("note", "Use query_full_scratchpad for the complete scratchpad."),
+                "source": parsed.get("source", parsed.get("tool", "")),
+                "summary_available": True,
+                "summary_chars": len(summary),
+                "summary_segments": parsed.get(
+                    "summary_segments", parsed.get("scratchpad_batches", 1)
+                ),
+                "note": parsed.get(
+                    "note", "Use inspect_evidence for the complete evidence summary."
+                ),
             }
         )
 

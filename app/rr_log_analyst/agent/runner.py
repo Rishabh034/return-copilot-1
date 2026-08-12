@@ -10,7 +10,6 @@ from langchain_core.messages import (
     AIMessageChunk,
     BaseMessage,
     HumanMessage,
-    SystemMessage,
     ToolMessage,
 )
 from langchain_core.tools import BaseTool
@@ -20,7 +19,12 @@ from app.clients.clickpost import ClickpostAPIError, ClickpostPermissionError
 from app.clients.llm import create_chat_model, create_secondary_chat_model
 from app.clients.observability import langchain_trace_config
 from app.config import settings
-from app.rr_log_analyst.agent.context import merge_usage, prepare_messages, serialize_usage
+from app.rr_log_analyst.agent.context import (
+    build_system_message,
+    merge_usage,
+    prepare_messages,
+    serialize_usage,
+)
 from app.rr_log_analyst.agent.result_query import (
     build_auto_prefetch_message,
     extract_query_keywords,
@@ -40,40 +44,19 @@ logger = logging.getLogger(__name__)
 
 _FRIENDLY_TOOL_LABELS: dict[str, str] = {
     "fetch_rr_log": "Looking up the order",
-    "fetch_rr_log_by_shipment": "Finding the order",
-    "fetch_rr_logs_batch": "Looking up the orders",
-    "resolve_reference_number": "Finding the order",
-    "summarize_rr_log": "Reviewing the order",
-    "summarize_rr_logs_batch": "Reviewing the orders",
-    "get_rr_log_order": "Reading the order details",
-    "get_rr_log_pipeline": "Checking how the delivery company was picked",
-    "get_rr_log_ranking": "Checking the delivery company choices",
-    "search_rr_log_courier": "Tracing a delivery company",
     "fetch_order_creation_log": "Checking the order creation history",
     "fetch_audit_logs": "Checking recent changes",
-    "fetch_audit_logs_for_rule": "Checking changes to a setting",
-    "list_filter_rules": "Reading the delivery settings",
-    "list_ordered_list_rules": "Reading the priority settings",
+    "list_rules": "Reading the delivery settings",
     "find_rule": "Finding a setting",
-    "get_filter_rule": "Opening a setting",
-    "get_ordered_list_rule": "Opening a setting",
-    "search_filter_rules": "Searching the settings",
-    "find_rules_for_pincode": "Finding settings for this area",
-    "find_rules_for_carrier": "Finding settings for this delivery company",
-    "summarize_filter_rules": "Reviewing the settings",
+    "list_carrier_exception_rules": "Reading carrier attribute rules",
     "get_enterprise_flow_config": "Checking the delivery setup",
-    "get_flow_config_flag": "Checking a setup option",
     "get_load_distribution_config": "Checking how orders are split",
     "run_recommendation": "Running a test",
-    "summarize_recommendation": "Reviewing the test",
-    "get_recommendation_pipeline": "Reviewing the test details",
     "get_account_info": "Looking up delivery company accounts",
-    "summarize_accounts": "Reviewing the accounts",
-    "search_accounts": "Searching the accounts",
-    "lookup_courier_partner": "Looking up the delivery company",
     "search_courier_partners": "Searching delivery companies",
-    "check_pincode_serviceability": "Checking pincode serviceability",
     "check_route_serviceability": "Checking route serviceability",
+    "inspect_evidence": "Reviewing the evidence",
+    "inspect_source_segment": "Checking supporting details",
 }
 
 
@@ -149,7 +132,9 @@ def _summarize_result(tool_name: str, result: dict) -> str:
         state = "on" if result["value"] in (True, "true", "True", 1) else "off"
         return f"The \"{result['flag']}\" setting is turned {state}"
 
-    if "logs_sample" in result:
+    # Audit logs must be matched before the generic count+logs branch below, which
+    # would otherwise describe rule edits as "shipments".
+    if "action_taken" in result and "logs" in result:
         count = result.get("count", 0)
         if count:
             return f"Found {count} recent change(s) made to the settings"
@@ -232,6 +217,30 @@ def _summarize_result(tool_name: str, result: dict) -> str:
         return f"Found {count} possible accounts — please pick the right one"
 
     return "Done"
+
+_SCRATCHPAD_EXEMPT_TOOLS = frozenset({"inspect_evidence", "inspect_source_segment"})
+
+# Tools whose result can change between identical calls, so an earlier result in
+# the same conversation must never be reused (simulations, "run it again" actions).
+_DEDUPE_EXEMPT_TOOLS = frozenset({"run_recommendation"})
+
+
+def _find_cached_result(
+    conversation_id: str, tool_name: str, tool_args: dict[str, Any]
+) -> StoredToolResult | None:
+    """Find an earlier identical call in this conversation whose scratchpad is already built.
+
+    Re-fetching the same tool with the same args re-runs the whole chunk +
+    one-Haiku-call-per-chunk pipeline over data we already summarized — the
+    single largest source of wasted secondary-model tokens (a repeated
+    list_rules can be dozens of Haiku calls on its own).
+    """
+    if tool_name in _DEDUPE_EXEMPT_TOOLS:
+        return None
+    for stored in tool_result_store.list(conversation_id):
+        if stored.tool_name == tool_name and stored.args == tool_args and stored.settled:
+            return stored
+    return None
 
 
 def _build_tool_message_content(
@@ -339,7 +348,7 @@ class AgentRunner:
                     ),
                 ]
 
-            llm_input: list[BaseMessage] = [SystemMessage(content=system_prompt), *trimmed]
+            llm_input: list[BaseMessage] = [build_system_message(system_prompt), *trimmed]
 
             if use_scratchpad and not is_last:
                 user_text = _latest_user_text(trimmed)
@@ -383,11 +392,17 @@ class AgentRunner:
                 usage_by_iteration.append(iteration_usage)
                 total_usage = merge_usage(total_usage, iteration_usage)
                 logger.info(
-                    "Claude usage iteration %d: input=%d output=%d total=%d",
+                    "Claude usage iteration %d: input=%d output=%d total=%d "
+                    "cache_read=%d cache_write=%d uncached_input=%d",
                     iteration + 1,
                     iteration_usage["input_tokens"],
                     iteration_usage["output_tokens"],
                     iteration_usage["total_tokens"],
+                    iteration_usage.get("cache_read_input_tokens", 0),
+                    iteration_usage.get("cache_creation_input_tokens", 0),
+                    iteration_usage["input_tokens"]
+                    - iteration_usage.get("cache_read_input_tokens", 0)
+                    - iteration_usage.get("cache_creation_input_tokens", 0),
                 )
 
             ai_message = AIMessage(
@@ -418,7 +433,9 @@ class AgentRunner:
             yield ("message_complete", {"message": ai_message})
 
             # Phase 1: invoke all tools (sequential — tools may have side effects)
-            tool_invocations: list[tuple[str, str, dict, dict, list[str]]] = []
+            tool_invocations: list[
+                tuple[str, str, dict, dict, list[str], ScratchpadBuildResult | None, bool]
+            ] = []
             for tool_call in accumulated.tool_calls:
                 tool_name = tool_call["name"]
                 tool_args = tool_call.get("args") or {}
@@ -433,15 +450,69 @@ class AgentRunner:
                     },
                 )
 
+                tool_uses_scratchpad = use_scratchpad and tool_name not in _SCRATCHPAD_EXEMPT_TOOLS
+
+                cached = (
+                    _find_cached_result(conversation_id, tool_name, tool_args)
+                    if tool_uses_scratchpad
+                    else None
+                )
+                if cached is not None:
+                    # Reuse the earlier identical call verbatim: no HTTP re-fetch,
+                    # no re-chunking, and no Haiku calls at all.
+                    result = cached.result
+                    raw_data_parts = cached.raw_data_parts
+                    cached_built = ScratchpadBuildResult(
+                        scratchpad=cached.scratchpad,
+                        batches=list(cached.scratchpad_batches),
+                        usage=None,
+                    )
+                    # Alias under this tool_call_id so query_result(result_id) resolves
+                    # for the id the model actually sees in this turn's envelope.
+                    tool_result_store.put(
+                        conversation_id,
+                        StoredToolResult(
+                            tool_call_id=tool_id,
+                            tool_name=tool_name,
+                            args=tool_args,
+                            result=result,
+                            scratchpad=cached.scratchpad,
+                            scratchpad_batches=list(cached.scratchpad_batches),
+                            raw_data_parts=raw_data_parts,
+                            settled=True,
+                        ),
+                    )
+                    logger.info(
+                        "Reused cached tool result tool=%s result_id=%s (from %s) "
+                        "— skipped re-fetch and %d Haiku calls",
+                        tool_name,
+                        tool_id,
+                        cached.tool_call_id,
+                        len(raw_data_parts),
+                    )
+                    tool_invocations.append(
+                        (tool_id, tool_name, tool_args, result, raw_data_parts, cached_built, True)
+                    )
+                    continue
+
                 tool = tools_by_name.get(tool_name)
                 if tool is None:
                     result = {"error": f"Unknown tool: {tool_name}"}
                 else:
                     result = await _invoke_tool(tool, tool_args)
 
-                raw_data_parts = prepare_raw_data_parts(result) if use_scratchpad else []
+                # A result small enough to hand over as-is should never be summarized:
+                # the Haiku call costs tokens to produce something lossier than the
+                # original, and the lost detail comes back as extra drill-down turns.
+                result_chars = len(json.dumps(result, default=str))
+                summarize = (
+                    tool_uses_scratchpad and result_chars > settings.scratchpad_min_result_chars
+                )
+                raw_data_parts = prepare_raw_data_parts(result) if summarize else []
 
-                if use_scratchpad:
+                if tool_uses_scratchpad:
+                    # Stored either way — query_result(keywords=...) searches the stored
+                    # raw JSON, and that stays useful even with no scratchpad built.
                     tool_result_store.put(
                         conversation_id,
                         StoredToolResult(
@@ -452,29 +523,49 @@ class AgentRunner:
                             scratchpad="",
                             scratchpad_batches=[],
                             raw_data_parts=raw_data_parts,
+                            # Final already when nothing will be summarized; otherwise
+                            # Phase 3 re-stores it with the notes and marks it settled.
+                            settled=not summarize,
                         ),
                     )
                     logger.info(
-                        "Stored full tool result tool=%s result_id=%s raw_data_parts=%d",
+                        "Stored full tool result tool=%s result_id=%s chars=%d "
+                        "raw_data_parts=%d summarize=%s",
                         tool_name,
                         tool_id,
+                        result_chars,
                         len(raw_data_parts),
+                        summarize,
                     )
 
-                tool_invocations.append((tool_id, tool_name, tool_args, result, raw_data_parts))
+                tool_invocations.append(
+                    (tool_id, tool_name, tool_args, result, raw_data_parts, None, summarize)
+                )
 
             # Phase 2: build scratchpads in parallel across all tool results
             scratchpad_tasks = []
-            for tool_id, tool_name, tool_args, result, raw_data_parts in tool_invocations:
-                if use_scratchpad and secondary_llm is not None and raw_data_parts:
+            for (
+                tool_id,
+                tool_name,
+                tool_args,
+                result,
+                raw_data_parts,
+                cached_built,
+                summarize,
+            ) in tool_invocations:
+                if cached_built is not None:
+                    async def _reuse(built=cached_built):
+                        return built
+                    scratchpad_tasks.append(_reuse())
+                elif summarize and secondary_llm is not None and raw_data_parts:
                     scratchpad_tasks.append(
                         summarize_raw_data_parts(
                             secondary_llm, tool_name, tool_args, raw_data_parts, conversation_id
                         )
                     )
                 else:
-                    async def _immediate(tn=tool_name, r=result):
-                        if use_scratchpad:
+                    async def _immediate(tn=tool_name, r=result, use_fallback=summarize):
+                        if use_fallback:
                             return fallback_scratchpad(tn, r)
                         return ScratchpadBuildResult(scratchpad="", batches=[], usage=None)
                     scratchpad_tasks.append(_immediate())
@@ -484,9 +575,15 @@ class AgentRunner:
             )
 
             # Phase 3: assemble tool messages
-            for idx, (tool_id, tool_name, tool_args, result, raw_data_parts) in enumerate(
-                tool_invocations
-            ):
+            for idx, (
+                tool_id,
+                tool_name,
+                tool_args,
+                result,
+                raw_data_parts,
+                _cached_built,
+                summarize,
+            ) in enumerate(tool_invocations):
                 built_or_exc = scratchpad_results_raw[idx]
                 if isinstance(built_or_exc, Exception):
                     logger.exception(
@@ -494,7 +591,9 @@ class AgentRunner:
                         tool_name,
                         exc_info=built_or_exc,
                     )
-                    built = fallback_scratchpad(tool_name, result)
+                    built = fallback_scratchpad(tool_name, result) if summarize else ScratchpadBuildResult(
+                        scratchpad="", batches=[], usage=None
+                    )
                 else:
                     built = built_or_exc
 
@@ -503,7 +602,7 @@ class AgentRunner:
                 if built.usage:
                     secondary_usage = merge_usage(secondary_usage, built.usage)
 
-                if use_scratchpad:
+                if summarize:
                     tool_result_store.put(
                         conversation_id,
                         StoredToolResult(
@@ -514,6 +613,7 @@ class AgentRunner:
                             scratchpad=scratchpad,
                             scratchpad_batches=scratchpad_batches,
                             raw_data_parts=raw_data_parts,
+                            settled=True,
                         ),
                     )
 
@@ -524,7 +624,9 @@ class AgentRunner:
                     scratchpad=scratchpad,
                     scratchpad_batches=scratchpad_batches,
                     raw_data_parts=raw_data_parts,
-                    use_scratchpad=use_scratchpad,
+                    # Not summarized → the model gets the raw JSON verbatim, which is
+                    # both cheaper and lossless compared to an envelope + notes.
+                    use_scratchpad=summarize,
                 )
                 tool_message = ToolMessage(
                     content=tool_message_content,

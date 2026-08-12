@@ -5,7 +5,7 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from app.rr_log_analyst.tools._common import as_list
+from app.rr_log_analyst.tools._common import as_list, cached_fetch
 from app.rr_log_analyst.tools.context import ToolContext
 
 
@@ -29,7 +29,13 @@ def _shape_partner(partner: dict) -> dict:
 
 
 async def _fetch_shaped_partners(context: ToolContext) -> list[dict]:
-    raw = await context.clickpost_client.list_courier_partners(token=context.token)
+    # The CP catalog is global and effectively static, so re-downloading it per
+    # query is pure waste.
+    raw = await cached_fetch(
+        context,
+        ("courier_partners",),
+        lambda: context.clickpost_client.list_courier_partners(token=context.token),
+    )
     return [_shape_partner(p) for p in as_list(raw)]
 
 
@@ -58,7 +64,7 @@ async def _search_courier_partners(context: ToolContext, query: str) -> dict[str
     partners = await _fetch_shaped_partners(context)
     query = query.strip()
     if not query:
-        return {"error": "query is required. Use lookup_courier_partner when you have the cpId."}
+        return {"error": "query is required — pass a carrier name or a cpId."}
     matched = [p for p in partners if _matches(p, query)]
     return {"count": len(matched), "partners": matched}
 
@@ -71,16 +77,6 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
         return await _search_courier_partners(context, query)
 
     return [
-        StructuredTool.from_function(
-            coroutine=lookup_courier_partner,
-            name="lookup_courier_partner",
-            description=(
-                "PRIMARY — Resolve a courier partner (carrier) by cpId. Returns name, cpid, country, "
-                "and type (Forward/Reverse/B2B). Use whenever you have a cpId and need the carrier "
-                "name or metadata."
-            ),
-            args_schema=LookupCourierPartnerInput,
-        ),
         StructuredTool.from_function(
             coroutine=search_courier_partners,
             name="search_courier_partners",

@@ -17,6 +17,7 @@ def create_chat_model(model: str | None = None) -> ChatAnthropic:
         streaming=True,
         stream_usage=True,
         **kwargs,
+        temperature=settings.rr_analyst_temperature,
     )
 
 
@@ -27,4 +28,5 @@ def create_secondary_chat_model() -> ChatAnthropic:
         max_tokens=settings.rr_analyst_secondary_max_output_tokens,
         streaming=False,
         stream_usage=True,
+        temperature=settings.rr_analyst_secondary_temperature,
     )

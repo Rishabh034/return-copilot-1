@@ -15,6 +15,11 @@ class StoredToolResult:
     scratchpad_batches: list[str] = field(default_factory=list)
     raw_data_parts: list[str] = field(default_factory=list)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    # True once the record is final. A result awaiting summarization is stored early
+    # (so query_* can reach it) but must not be reused as a cache hit — and a result
+    # that skipped summarization is final despite having no scratchpad, which is why
+    # this is a flag rather than an "is scratchpad non-empty" check.
+    settled: bool = False
 
 
 class ToolResultStore:
@@ -46,6 +51,7 @@ def stored_tool_result_to_dict(stored: StoredToolResult) -> dict[str, Any]:
         "scratchpad_batches": list(stored.scratchpad_batches),
         "raw_data_parts": list(stored.raw_data_parts),
         "created_at": stored.created_at.isoformat(),
+        "settled": stored.settled,
     }
 
 
@@ -73,6 +79,7 @@ def stored_tool_result_from_dict(data: dict[str, Any]) -> StoredToolResult:
             part for part in (data.get("raw_data_parts") or []) if isinstance(part, str)
         ],
         created_at=created_at,
+        settled=bool(data.get("settled")),
     )
 
 

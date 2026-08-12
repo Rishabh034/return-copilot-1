@@ -2,174 +2,115 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Self
 from zoneinfo import ZoneInfo
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-from app.rr_log_analyst.tools._common import FILTERS_RAN_KEYS, shape_allocation_result, shape_user_request
-from app.rr_log_analyst.tools.allocation_views import (
-    compact_allocation_summary,
-    extract_order,
-    extract_pipeline,
-    extract_ranking,
-    search_courier_in_allocation,
-)
+from app.rr_log_analyst.tools._common import shape_allocation_result, shape_user_request
 from app.rr_log_analyst.tools.context import ToolContext
 
 _IST = ZoneInfo("Asia/Kolkata")
 _DEFAULT_LOOKUP_DAYS = 90
 _DATE_FORMATS = ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S")
 
-PipelineStage = Literal[
-    "1_active_accounts_filter",
-    "1_blacklisted_accounts",
-    "2_serviceable_accounts_filter",
-    "2_1_serviceable_oda_accounts_filter",
-    "clickpost_defined_and_custom_rule_matched",
-    "3_clickpost_filters_rules_list",
-    "3_clickpost_define_and_custom_filters_accounts_applied",
-    "3_clickpost_define_and_custom_filters_accounts",
-    "accounts_after_load_distribution_filter",
-    "accounts_after_load_distribution",
-    "priority_list_account_names",
-    "4_ordered_list_rules_list",
-    "order_list_matched_rule",
-    "4_ordered_list_account_names_filters_applied",
-    "ordered_list_filter_accounts",
-    "5_accounts_after_intelligent_performance_allocation",
-]
+class FetchRRLogInput(BaseModel):
+    """Unified RR log fetch: reference_number(s) and/or AWB/order_id (+ optional dates)."""
 
-
-class ReferenceInput(BaseModel):
-    reference_number: str = Field(description="The shipment/order reference number to look up.")
-
-
-class ReferenceBatchInput(BaseModel):
-    reference_numbers: list[str] = Field(
-        description="List of shipment reference numbers to fetch (max 20).",
+    reference_number: str | None = Field(
+        default=None,
+        description="Known shipment reference_number. Use this when the ref is already known.",
+    )
+    reference_numbers: list[str] | None = Field(
+        default=None,
+        description="Batch of reference numbers to fetch and compare (max 20).",
         min_length=1,
         max_length=20,
     )
-
-
-class PipelineStageInput(BaseModel):
-    reference_number: str = Field(description="Shipment reference number.")
-    stage: PipelineStage = Field(description="Pipeline stage key from filters_ran to inspect.")
-    account_id: int | None = Field(
-        default=None,
-        description="When checking if a specific carrier survived this stage, pass its account_id.",
-    )
-    cp_name: str = Field(
-        default="",
-        description="Alternatively match carrier by cp_name substring in this stage's account list.",
-    )
-
-
-class RankingInput(BaseModel):
-    reference_number: str = Field(description="Shipment reference number.")
-    account_id: int | None = Field(
-        default=None,
-        description="Return only this account_id from the final ranking.",
-    )
-    cp_name: str = Field(
-        default="",
-        description="Return only couriers whose cp_name or account_code contains this substring.",
-    )
-    limit: int = Field(
-        default=5,
-        ge=1,
-        le=20,
-        description="When no account_id/cp_name filter, return top N ranked couriers (default 5).",
-    )
-
-
-class SearchCourierInLogInput(BaseModel):
-    reference_number: str = Field(description="Shipment reference number.")
-    account_id: int | None = Field(default=None, description="Carrier account_id to trace.")
-    cp_name: str = Field(default="", description="Carrier brand substring (e.g. 'Delhivery').")
-
-
-class FetchRRLogByShipmentInput(BaseModel):
     awb: str | None = Field(
         default=None,
         description=(
-            "AWB / waybill number. Not mandatory when both start_date and end_date are "
-            "supplied; otherwise provide this OR order_id. Never provide both awb and order_id."
+            "AWB / waybill. Provide this OR order_id (not both) when the reference_number is "
+            "unknown. Optional when both start_date and end_date are supplied."
         ),
     )
     order_id: str | None = Field(
         default=None,
         description=(
-            "Dashboard order ID. Not mandatory when both start_date and end_date are "
-            "supplied; otherwise provide this OR awb. Never provide both awb and order_id."
+            "Dashboard order ID. Provide this OR awb (not both) when the reference_number is "
+            "unknown. Optional when both start_date and end_date are supplied."
         ),
     )
     start_date: str | None = Field(
         default=None,
         description=(
-            "Shipment registration start (inclusive), e.g. 2026-06-01 or "
-            "2026-06-01T00:00:00+05:30. Supplying start_date together with end_date makes "
-            "awb/order_id optional. If omitted with end_date, defaults to the last 90 days."
+            "Shipment registration start (inclusive), e.g. 2026-06-01. With end_date makes "
+            f"awb/order_id optional. Omit both for the default last-{_DEFAULT_LOOKUP_DAYS}-day window."
         ),
     )
     end_date: str | None = Field(
         default=None,
         description=(
-            "Shipment registration end (inclusive), e.g. 2026-06-13 or "
-            "2026-06-13T23:59:59+05:30. Supplying end_date together with start_date makes "
-            "awb/order_id optional. If omitted with start_date, defaults to the last 90 days."
+            "Shipment registration end (inclusive), e.g. 2026-06-13. With start_date makes "
+            f"awb/order_id optional. Omit both for the default last-{_DEFAULT_LOOKUP_DAYS}-day window."
         ),
     )
     page: int = Field(
         default=1,
         ge=1,
         description=(
-            "1-indexed page of track-order shipment results. A date-range lookup can match "
-            "more shipments than fit on one page; the response reports pagination.has_more "
-            "and pagination.next_page_number — call again with that page to fetch the rest."
+            "1-indexed page for AWB/order_id/date-range lookups. When pagination.has_more is true, "
+            "call again with pagination.next_page_number."
         ),
     )
     page_size: int = Field(
         default=100,
         ge=1,
         le=200,
-        description="Shipments per page from the track-order API (default 100).",
+        description="Shipments per page for AWB/order_id/date-range lookups (default 100).",
     )
 
+    @model_validator(mode="after")
+    def _validate_lookup_mode(self) -> Self:
+        ref = (self.reference_number or "").strip() or None
+        self.reference_number = ref
+        refs = [str(r).strip() for r in (self.reference_numbers or []) if str(r).strip()]
+        self.reference_numbers = refs or None
 
-def _normalize_shipment_lookup_input(
-    awb: str | None,
-    order_id: str | None,
-    start_date: str | None,
-    end_date: str | None,
-) -> dict[str, Any] | tuple[str | None, str | None, str | None, str | None]:
-    awb_value = (awb or "").strip() or None
-    order_id_value = (order_id or "").strip() or None
-    start = (start_date or "").strip() or None
-    end = (end_date or "").strip() or None
+        awb = (self.awb or "").strip() or None
+        order_id = (self.order_id or "").strip() or None
+        start = (self.start_date or "").strip() or None
+        end = (self.end_date or "").strip() or None
+        self.awb, self.order_id, self.start_date, self.end_date = awb, order_id, start, end
 
-    if awb_value and order_id_value:
-        return {"error": "Provide exactly one of awb or order_id, not both"}
+        has_ref = bool(ref)
+        has_refs = bool(refs)
+        has_shipment = bool(awb or order_id or (start and end))
 
-    if bool(start) != bool(end):
-        return {
-            "error": (
+        modes = sum(bool(x) for x in (has_ref, has_refs, has_shipment))
+        if modes == 0:
+            raise ValueError(
+                "Provide reference_number, reference_numbers, or awb/order_id "
+                "(optionally with start_date + end_date)"
+            )
+        if modes > 1:
+            raise ValueError(
+                "Provide only one lookup mode: reference_number, reference_numbers, "
+                "or awb/order_id/date-range — not a mix"
+            )
+        if awb and order_id:
+            raise ValueError("Provide exactly one of awb or order_id, not both")
+        if bool(start) != bool(end):
+            raise ValueError(
                 "Provide both start_date and end_date, or omit both for the default "
                 f"{_DEFAULT_LOOKUP_DAYS}-day window"
-            ),
-        }
-
-    if not awb_value and not order_id_value and not (start and end):
-        return {
-            "error": (
-                "Provide awb or order_id, or a start_date + end_date range to look up by "
-                "date alone."
-            ),
-        }
-
-    return awb_value, order_id_value, start, end
+            )
+        if has_shipment and not awb and not order_id and not (start and end):
+            raise ValueError(
+                "Provide awb or order_id, or a start_date + end_date range to look up by date alone"
+            )
+        return self
 
 
 def _format_ist_datetime(value: datetime) -> str:
@@ -315,7 +256,7 @@ def _shipment_not_found_response(
                 f"No shipment found for {identifier} in the default last-{_DEFAULT_LOOKUP_DAYS}-day "
                 f"window ({start_date.isoformat()} to {end_date.isoformat()}). "
                 "Ask the user for the shipment registration date range (start_date and end_date) "
-                "and retry with fetch_rr_log_by_shipment."
+                "and retry with fetch_rr_log."
             ),
             "default_range_tried": {
                 "start_date": start_date.isoformat(),
@@ -556,211 +497,65 @@ async def _load_rr_log(context: ToolContext, reference_number: str) -> dict[str,
     return _shape_rr_log(reference_number, raw)
 
 
+async def _fetch_rr_logs_batch(context: ToolContext, reference_numbers: list[str]) -> dict[str, Any]:
+    refs = [str(r).strip() for r in reference_numbers if str(r).strip()]
+    if not refs:
+        return {"error": "reference_numbers must contain at least one value"}
+
+    async def _one(ref: str) -> dict:
+        try:
+            return await _load_rr_log(context, ref)
+        except Exception as e:
+            return {"reference_number": ref, "error": str(e)}
+
+    logs = await asyncio.gather(*[_one(r) for r in refs])
+    return {"count": len(logs), "logs": list(logs)}
+
+
+async def _fetch_rr_log_unified(
+    context: ToolContext,
+    input: FetchRRLogInput,
+) -> dict[str, Any]:
+    if input.reference_number:
+        return await _load_rr_log(context, input.reference_number)
+
+    if input.reference_numbers:
+        return await _fetch_rr_logs_batch(context, input.reference_numbers)
+
+    return await _load_rr_log_by_shipment(
+        context,
+        awb=input.awb,
+        order_id=input.order_id,
+        start_date=input.start_date,
+        end_date=input.end_date,
+        page=input.page,
+        page_size=input.page_size,
+    )
+
+
 def build_tools(context: ToolContext) -> list[StructuredTool]:
-    async def fetch_rr_log(reference_number: str) -> dict[str, Any]:
-        return await _load_rr_log(context, reference_number)
-
-    async def fetch_rr_log_by_shipment(
-        awb: str | None = None,
-        order_id: str | None = None,
-        start_date: str | None = None,
-        end_date: str | None = None,
-        page: int = 1,
-        page_size: int = 100,
-    ) -> dict[str, Any]:
-        normalized = _normalize_shipment_lookup_input(awb, order_id, start_date, end_date)
-        if isinstance(normalized, dict):
-            return normalized
-        awb_value, order_id_value, start, end = normalized
-        return await _load_rr_log_by_shipment(
-            context,
-            awb=awb_value,
-            order_id=order_id_value,
-            start_date=start,
-            end_date=end,
-            page=page,
-            page_size=page_size,
-        )
-
-    async def resolve_reference_number(
-        awb: str | None = None,
-        order_id: str | None = None,
-        start_date: str | None = None,
-        end_date: str | None = None,
-        page: int = 1,
-        page_size: int = 100,
-    ) -> dict[str, Any]:
-        normalized = _normalize_shipment_lookup_input(awb, order_id, start_date, end_date)
-        if isinstance(normalized, dict):
-            return normalized
-        awb_value, order_id_value, start, end = normalized
-        return await _resolve_reference_number(
-            context,
-            awb=awb_value,
-            order_id=order_id_value,
-            start_date=start,
-            end_date=end,
-            page=page,
-            page_size=page_size,
-        )
-
-    async def fetch_rr_logs_batch(reference_numbers: list[str]) -> dict[str, Any]:
-        refs = [str(r).strip() for r in reference_numbers if str(r).strip()]
-        if not refs:
-            return {"error": "reference_numbers must contain at least one value"}
-
-        async def _one(ref: str) -> dict:
-            try:
-                return await _load_rr_log(context, ref)
-            except Exception as e:
-                return {"reference_number": ref, "error": str(e)}
-
-        logs = await asyncio.gather(*[_one(r) for r in refs])
-        return {"count": len(logs), "logs": list(logs)}
-
-    async def summarize_rr_log(reference_number: str) -> dict[str, Any]:
-        log = await _load_rr_log(context, reference_number)
-        return compact_allocation_summary(log)
-
-    async def get_rr_log_order(reference_number: str) -> dict[str, Any]:
-        log = await _load_rr_log(context, reference_number)
-        return extract_order(log)
-
-    async def get_rr_log_pipeline(
-        reference_number: str,
-        stage: PipelineStage,
-        account_id: int | None = None,
-        cp_name: str = "",
-    ) -> dict[str, Any]:
-        log = await _load_rr_log(context, reference_number)
-        return extract_pipeline(log, stage, account_id=account_id, cp_name=cp_name)
-
-    async def get_rr_log_ranking(
-        reference_number: str,
-        account_id: int | None = None,
-        cp_name: str = "",
-        limit: int = 5,
-    ) -> dict[str, Any]:
-        log = await _load_rr_log(context, reference_number)
-        return extract_ranking(log, account_id=account_id, cp_name=cp_name, limit=limit)
-
-    async def search_rr_log_courier(
-        reference_number: str,
-        account_id: int | None = None,
-        cp_name: str = "",
-    ) -> dict[str, Any]:
-        log = await _load_rr_log(context, reference_number)
-        return search_courier_in_allocation(log, account_id=account_id, cp_name=cp_name)
-
-    async def summarize_rr_logs_batch(reference_numbers: list[str]) -> dict[str, Any]:
-        refs = [str(r).strip() for r in reference_numbers if str(r).strip()]
-        if not refs:
-            return {"error": "reference_numbers must contain at least one value"}
-
-        async def _one(ref: str) -> dict:
-            try:
-                return compact_allocation_summary(await _load_rr_log(context, ref))
-            except Exception as e:
-                return {"reference_number": ref, "error": str(e)}
-
-        summaries = await asyncio.gather(*[_one(r) for r in refs])
-        return {"count": len(summaries), "summaries": list(summaries)}
-
-    _stages_hint = ", ".join(FILTERS_RAN_KEYS)
+    async def fetch_rr_log(**kwargs: Any) -> dict[str, Any]:
+        return await _fetch_rr_log_unified(context, FetchRRLogInput(**kwargs))
 
     return [
-        StructuredTool.from_function(
-            coroutine=fetch_rr_log_by_shipment,
-            name="fetch_rr_log_by_shipment",
-            description=(
-                "PRIMARY — When the user gives an AWB or order_id (not reference_number): resolves "
-                f"reference_number via track-order, then fetches the RR log. awb/order_id are not "
-                "mandatory when both start_date and end_date are supplied (date-range-only lookup). "
-                f"If start_date/end_date are omitted, searches the last {_DEFAULT_LOOKUP_DAYS} days "
-                "first. If nothing is found, returns needs_date_range=true — ask the user for dates "
-                "and retry with the same awb or order_id plus start_date and end_date. "
-                "Returns {count, date_range_used, pagination, results:[{reference_number, shipment, "
-                "rr_log}]} — one entry per matched shipment. Date-range lookups can match more than "
-                "one page; when pagination.has_more is true, call again with "
-                "pagination.next_page_number."
-            ),
-            args_schema=FetchRRLogByShipmentInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=resolve_reference_number,
-            name="resolve_reference_number",
-            description=(
-                "SUB-TOOL — Resolve AWB or order_id to reference_number only (no RR log). "
-                "awb/order_id are not mandatory when both start_date and end_date are supplied "
-                f"(date-range-only lookup). Uses the last {_DEFAULT_LOOKUP_DAYS} days when dates "
-                "are omitted; returns needs_date_range=true if not found so you can ask the user "
-                "for a wider window. Returns {count, shipments:[...], reference_numbers:[...], "
-                "date_range_used, pagination} — matched shipments for the requested page. When "
-                "pagination.has_more is true, call again with pagination.next_page_number."
-            ),
-            args_schema=FetchRRLogByShipmentInput,
-        ),
         StructuredTool.from_function(
             coroutine=fetch_rr_log,
             name="fetch_rr_log",
             description=(
-                "PRIMARY — Full RR log when reference_number is already known. For AWB or order_id, "
-                "use fetch_rr_log_by_shipment first. Returns order, filters_ran pipeline trace, and "
-                "complete preference_array. If too large, use summarize_rr_log or get_rr_log_* sub-tools."
+                "PRIMARY — Fetch RR / allocation log(s). Each call takes exactly one lookup mode: "
+                "(1) reference_number for a known ref, "
+                "(2) reference_numbers for a batch compare (max 20), or "
+                f"(3) awb OR order_id (optionally with start_date/end_date; defaults to last "
+                f"{_DEFAULT_LOOKUP_DAYS} days). Mode 3 resolves the shipment then fetches the RR log. "
+                "One mode per call is a per-call limit, NOT a limit on how many interpretations you "
+                "may test: when an identifier is unlabeled, issue separate parallel calls in the same "
+                "turn — one with reference_number, one with awb, one with order_id — and treat the "
+                "identifier as unresolved only if all of them come back empty. "
+                "If nothing is found in the default window, returns needs_date_range=true — ask for "
+                "dates and retry. Returns the shaped log (order, filters_ran, preference_array) for "
+                "a single ref; for AWB/order_id lookups returns "
+                "{count, date_range_used, pagination, results:[{reference_number, shipment, rr_log}]}."
             ),
-            args_schema=ReferenceInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=fetch_rr_logs_batch,
-            name="fetch_rr_logs_batch",
-            description=(
-                "PRIMARY — Full RR logs for multiple reference numbers (max 20). Use to compare "
-                "allocations. If too large, use summarize_rr_logs_batch."
-            ),
-            args_schema=ReferenceBatchInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=summarize_rr_log,
-            name="summarize_rr_log",
-            description=(
-                "SUB-TOOL — Compact RR log overview: matched filter, top courier, total ranked. "
-                "Use when fetch_rr_log result is too large."
-            ),
-            args_schema=ReferenceInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=get_rr_log_order,
-            name="get_rr_log_order",
-            description="SUB-TOOL — Order/request fields only from an RR log.",
-            args_schema=ReferenceInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=get_rr_log_pipeline,
-            name="get_rr_log_pipeline",
-            description=(
-                f"SUB-TOOL — One pipeline stage from filters_ran. Stages: {_stages_hint}. "
-                "Pass account_id or cp_name to check carrier survival at that stage."
-            ),
-            args_schema=PipelineStageInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=get_rr_log_ranking,
-            name="get_rr_log_ranking",
-            description="SUB-TOOL — Final ranking only; filter by account_id/cp_name or top N.",
-            args_schema=RankingInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=search_rr_log_courier,
-            name="search_rr_log_courier",
-            description=(
-                "SUB-TOOL — Trace one courier through pipeline stages. Requires account_id or cp_name."
-            ),
-            args_schema=SearchCourierInLogInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=summarize_rr_logs_batch,
-            name="summarize_rr_logs_batch",
-            description="SUB-TOOL — Compact summaries for multiple orders when fetch_rr_logs_batch is too large.",
-            args_schema=ReferenceBatchInput,
+            args_schema=FetchRRLogInput,
         ),
     ]

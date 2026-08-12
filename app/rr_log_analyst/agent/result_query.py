@@ -224,10 +224,7 @@ def build_auto_prefetch_message(
         if not matched["matches"]:
             continue
 
-        section = (
-            f"Tool: {stored.tool_name} (result_id={stored.tool_call_id})\n"
-            f"{json.dumps(matched, default=str, indent=2)}"
-        )
+        section = json.dumps(matched, default=str, indent=2)
         if total_chars + len(section) > char_limit:
             break
         sections.append(section)
@@ -238,6 +235,6 @@ def build_auto_prefetch_message(
 
     keyword_list = ", ".join(keywords)
     return (
-        f"[Auto-fetched tool result slices matching query keywords: {keyword_list}]\n\n"
+        f"[Relevant prior evidence for: {keyword_list}]\n\n"
         + "\n\n".join(sections)
     )

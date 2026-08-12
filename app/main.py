@@ -3,7 +3,7 @@ import logging
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -18,6 +18,7 @@ from app.logging_config import setup_logging
 from app.request_context import request_id_var
 from app.response_envelope import ENVELOPE_STATUS_HEADER, ResponseEnvelopeMiddleware
 from app.routers import rr_log_analyst_router
+from app.utilities.alerts import alert_slack
 
 setup_logging()
 
@@ -63,6 +64,19 @@ async def agent_auth_error_handler(_request, exc: AgentAuthError) -> JSONRespons
         status_code=200,
         content={"detail": exc.detail},
         headers={ENVELOPE_STATUS_HEADER: str(exc.status_code)},
+    )
+
+
+async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    # Catch-all fallback: anything that isn't an AppError/AgentAuthError/
+    # HTTPException ends up here instead of Starlette's default handler, which
+    # sits outside our envelope/CORS/request-id middleware and would otherwise
+    # reach the browser as an unwrapped, header-less response.
+    logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+    await asyncio.to_thread(alert_slack, f"{request.method} {request.url.path}", exc)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Something went wrong. Please try again."},
     )
 
 
@@ -117,6 +131,7 @@ def create_app() -> FastAPI:
 
     application.add_exception_handler(AppError, app_error_handler)
     application.add_exception_handler(AgentAuthError, agent_auth_error_handler)
+    application.add_exception_handler(Exception, unhandled_error_handler)
 
     return application
 

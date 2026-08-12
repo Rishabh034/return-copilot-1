@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import ExitStack, contextmanager
 
 from app.config import settings
 
@@ -46,9 +47,23 @@ def init_langfuse() -> None:
     global _langchain_handler_cls
     _langchain_handler_cls = CallbackHandler
 
-    get_client()
+    client = get_client()
     AnthropicInstrumentor().instrument()
-    logger.info("Langfuse tracing enabled (host=%s)", settings.langfuse_base_url)
+
+    try:
+        if client.auth_check():
+            logger.info("Langfuse tracing enabled (host=%s)", settings.langfuse_base_url)
+        else:
+            logger.error(
+                "Langfuse auth_check failed — check LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY "
+                "against host=%s",
+                settings.langfuse_base_url,
+            )
+    except Exception:
+        logger.exception(
+            "Langfuse auth_check errored — host=%s may be unreachable from this process",
+            settings.langfuse_base_url,
+        )
 
 
 def shutdown_langfuse() -> None:
@@ -72,3 +87,35 @@ def langchain_trace_config(session_id: str | None = None) -> dict:
     if session_id:
         config["metadata"] = {"langfuse_session_id": session_id}
     return config
+
+
+@contextmanager
+def trace_span(name: str, **kwargs):
+    """Wrap a block of work in a Langfuse span, or a no-op if tracing is disabled.
+
+    Any LangChain calls made inside the block (via langchain_trace_config)
+    nest under this span automatically. On disabled/uninitialized tracing, or
+    on ANY error opening the span (bad SDK call, auth, network), yields None
+    instead of raising - a broken observability call must never take down the
+    actual request. This matters especially inside StreamingResponse
+    generators: once headers are sent, an exception here can't be recovered
+    from the way a normal error handler would.
+    """
+    if _langchain_handler_cls is None:
+        yield None
+        return
+
+    from langfuse import get_client
+
+    with ExitStack() as stack:
+        try:
+            span = stack.enter_context(
+                get_client().start_as_current_observation(name=name, **kwargs)
+            )
+        except Exception:
+            logger.exception("Failed to open Langfuse span %r; continuing untraced", name)
+            span = None
+        # Only span *creation* is guarded above. Anything raised by the
+        # caller's `with trace_span(...)` block itself must propagate
+        # normally here, not be swallowed as if tracing had failed.
+        yield span

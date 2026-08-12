@@ -9,6 +9,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage
 from langchain_anthropic import ChatAnthropic
 
+from app.clients.observability import langchain_trace_config
 from app.config import settings
 from app.rr_log_analyst.agent.context import merge_usage, serialize_usage
 
@@ -147,6 +148,7 @@ async def summarize_raw_data_parts(
     tool_name: str,
     tool_args: dict[str, Any],
     raw_data_parts: list[str],
+    conversation_id: str | None = None,
 ) -> ScratchpadBuildResult:
     """Run one new Haiku call per stored raw data part to build scratchpad batch summaries."""
     if not raw_data_parts:
@@ -176,7 +178,9 @@ async def summarize_raw_data_parts(
 
     async def _summarize_one(prompt: str, index: int) -> str:
         try:
-            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            response = await llm.ainvoke(
+                [HumanMessage(content=prompt)], config=langchain_trace_config(conversation_id)
+            )
             return response
         except Exception:
             logger.exception(

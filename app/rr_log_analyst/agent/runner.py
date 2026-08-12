@@ -366,9 +366,12 @@ class AgentRunner:
                     if text_delta:
                         yield ("text_delta", {"delta": text_delta})
                     accumulated = chunk if accumulated is None else accumulated + chunk
-            except Exception as e:
+            except Exception:
                 logger.exception("Claude API error on iteration %d", iteration)
-                yield ("error", {"code": "llm_error", "message": str(e)})
+                yield (
+                    "error",
+                    {"code": "llm_error", "message": "The assistant is busy. Please try again."},
+                )
                 return
 
             if accumulated is None:
@@ -465,7 +468,9 @@ class AgentRunner:
             for tool_id, tool_name, tool_args, result, raw_data_parts in tool_invocations:
                 if use_scratchpad and secondary_llm is not None and raw_data_parts:
                     scratchpad_tasks.append(
-                        summarize_raw_data_parts(secondary_llm, tool_name, tool_args, raw_data_parts)
+                        summarize_raw_data_parts(
+                            secondary_llm, tool_name, tool_args, raw_data_parts, conversation_id
+                        )
                     )
                 else:
                     async def _immediate(tn=tool_name, r=result):

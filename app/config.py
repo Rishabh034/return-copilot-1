@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     protected_tail_messages: int = 4
     slack_token: str | None = None
     slack_channel: str = "clickhelp-conversations"
+    # Incoming-webhook URL used to alert on unhandled backend exceptions
+    # (app/utilities/alerts.py). Separate from slack_token/slack_channel above,
+    # which are currently unused dead config.
+    slack_error_webhook_url: str | None = None
     allowed_origins: str = "https://alerts.clickpost.in"  # comma-separated list of allowed CORS origins
 
     # Log shipping: write logs to hourly-rotated files and upload them to S3.

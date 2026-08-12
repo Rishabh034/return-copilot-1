@@ -14,7 +14,9 @@ from sqlalchemy import update
 from datetime import datetime
 from app.db import AsyncSessionLocal
 from app.dependencies.auth import resolve_identity
-from app.exceptions import NotFoundError,BadRequestError
+from app.clients.observability import trace_span
+from app.exceptions import AppError, NotFoundError, BadRequestError
+from app.utilities.alerts import alert_slack
 from app.rr_log_analyst.agent import AgentRunner, build_system_prompt
 from app.rr_log_analyst.auth import (
     resolve_internal_user_id,
@@ -249,192 +251,209 @@ async def send_message(
             completed_output_tokens = 0
             usage_settled = False
 
-            # Create-or-attach the conversation and persist the user's message
-            # immediately, so a stopped turn always leaves a resumable history.
-            if is_new_conversation:
-                conversation = await repo.create(
-                    user_id=user_id,
-                    enterprise_id=enterprise_id,
-                    conversation_id=uuid.UUID(conversation_id),
-                    internal_user_id=internal_user_id,
-                    is_internal_user=is_internal_user,
-                )
-            else:
-                conversation = await repo.get_owned(
-                    uuid.UUID(conversation_id),
-                    user_id=user_id,
-                    enterprise_id=enterprise_id,
-                    internal_user_id=internal_user_id,
-                    is_internal_user=is_internal_user,
-                )
-                if conversation is None:
-                    raise NotFoundError("Conversation not found")
-
-            seq = await repo.next_seq(conversation.id)
-            human_row = await repo.append_message(
-                conversation,
-                seq=seq,
-                message=human_message,
-            )
-            seq += 1
-            await session.commit()
-            
-            if is_new_conversation:
-                title = await generate_conversation_title(
-                    user_message=human_message.content
-                )
-                if title:
-                    conversation.title = title
-                    await session.commit()
-                    logger.info(
-                        "Set conversation title conversation_id=%s title=%r",
-                        conversation_id,
-                        title,
-                    )
-
-            try:
-                async for event_type, data in runner.handle_message_stream(
-                    messages=messages,
-                    system_prompt=system_prompt,
-                    model=settings.rr_analyst_model,
-                    token=token,
-                    conversation_id=conversation_id,
-                ):
-                    if event_type == "message_complete":
-                        # Finalized, balanced message — persist it; never forward
-                        # the BaseMessage object to the browser.
-                        message = data["message"]
-                        _stamp_message_time(message)
-                        await repo.append_message(conversation, seq=seq, message=message)
-                        if isinstance(message, AIMessage):
-                            last_ai_message = message
-                            last_ai_seq = seq  # anchor feedback to this row's seq
-                            if message.usage_metadata:
-                                completed_input_tokens = max(
-                                    completed_input_tokens,
-                                    message.usage_metadata.get("input_tokens") or 0,
-                                )
-                                completed_output_tokens += (
-                                    message.usage_metadata.get("output_tokens") or 0
-                                )
-                        else:
-                            hidden_usage = message.additional_kwargs.get(
-                                "usage_metadata"
-                            )
-                            if isinstance(hidden_usage, dict):
-                                completed_side_input_tokens += (
-                                    hidden_usage.get("input_tokens") or 0
-                                )
-                                completed_output_tokens += (
-                                    hidden_usage.get("output_tokens") or 0
-                                )
-                        seq += 1
-                        await session.commit()
-                        partial_buffer = ""  # this turn finalized cleanly
-                        continue
-
-                    if event_type == "text_delta":
-                        partial_buffer += data.get("delta", "")
-
-                    if event_type == "done":
-                        usage = data.get("usage") or {}
-                        secondary_usage = data.get("secondary_usage") or {}
-                        by_iteration = data.get("usage_by_iteration") or []
-                        # Each iteration resends the previous one's prompt, so
-                        # the largest prompt already covers them all; summing
-                        # would bill the same context once per iteration.
-                        settled_input = max(
-                            (i.get("input_tokens") or 0 for i in by_iteration),
-                            default=usage.get("input_tokens") or 0,
-                        )
-                        settled_output = (usage.get("output_tokens") or 0) + (
-                            secondary_usage.get("output_tokens") or 0
-                        )
-                        await _settle_user_tokens(
+            with trace_span(
+                "chat_turn", metadata={"langfuse_session_id": conversation_id}
+            ) as span:
+                try:
+                    # Create-or-attach the conversation and persist the user's message
+                    # immediately, so a stopped turn always leaves a resumable history.
+                    if is_new_conversation:
+                        conversation = await repo.create(
                             user_id=user_id,
                             enterprise_id=enterprise_id,
-                            is_internal_user=is_internal_user,
+                            conversation_id=uuid.UUID(conversation_id),
                             internal_user_id=internal_user_id,
-                            input_tokens=settled_input,
-                            output_tokens=settled_output,
-                            side_input_tokens=secondary_usage.get("input_tokens") or 0,
-                            human_message_id=human_row.id,
+                            is_internal_user=is_internal_user,
                         )
-                        usage_settled = True
-                        thinking = (
-                            _extract_thinking(last_ai_message.content)
-                            if last_ai_message is not None
-                            else None
-                        )
-                        data = {
-                            "conversation_id": conversation_id,
-                            "usage": data.get("usage"),
-                            "usage_by_iteration": data.get("usage_by_iteration"),
-                            "reasoning": thinking,
-                            # The final assistant message's own row seq — matches the
-                            # seq replayed via GET /conversations/{id}, so feedback
-                            # keyed by (conversation_id, seq) lines up either way.
-                            "seq": last_ai_seq,
-                        }
-                        logger.info(
-                            "Request cycle done conversation_id=%s user_id=%s "
-                            "enterprise_id=%s messages=%d usage=%s",
-                            conversation_id,
-                            user_id,
-                            enterprise_id,
-                            seq,
-                            data.get("usage"),
-                        )
-
-                    yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
-
-                # First exchange on a fresh conversation — title it from the
-                # opening user/assistant turn with a small Haiku call. Runs after
-                # the answer has fully streamed, so it never delays the response;
-                # best-effort, so a failure leaves the conversation untitled.
-                
-            except asyncio.CancelledError:
-                # Client stopped / disconnected mid-stream. Persist whatever
-                # assistant text streamed so far as a display-only partial row
-                # (excluded from replay) so it survives a refresh, then re-raise.
-                # Use a fresh session shielded from the in-flight cancellation:
-                # the streaming session above is already unwinding, and the
-                # commit must not be interrupted.
-                text = partial_buffer.strip()
-                if text:
-                    await asyncio.shield(
-                        _persist_partial(
+                    else:
+                        conversation = await repo.get_owned(
                             uuid.UUID(conversation_id),
                             user_id=user_id,
                             enterprise_id=enterprise_id,
                             internal_user_id=internal_user_id,
                             is_internal_user=is_internal_user,
-                            text=text,
                         )
+                        if conversation is None:
+                            raise NotFoundError("Conversation not found")
+
+                    seq = await repo.next_seq(conversation.id)
+                    human_row = await repo.append_message(
+                        conversation,
+                        seq=seq,
+                        message=human_message,
                     )
-                raise
-            except Exception as e:
-                logger.exception("SSE stream error")
-                payload = json.dumps({"code": "internal_error", "message": str(e)})
-                yield f"event: error\ndata: {payload}\n\n"
-            finally:
-                if not usage_settled and (
-                    completed_input_tokens > 0
-                    or completed_side_input_tokens > 0
-                    or completed_output_tokens > 0
-                ):
-                    await asyncio.shield(
-                        _settle_user_tokens(
-                            user_id=user_id,
-                            enterprise_id=enterprise_id,
-                            is_internal_user=is_internal_user,
-                            internal_user_id=internal_user_id,
-                            input_tokens=completed_input_tokens,
-                            output_tokens=completed_output_tokens,
-                            side_input_tokens=completed_side_input_tokens,
-                            human_message_id=human_row.id,
+                    seq += 1
+                    await session.commit()
+
+                    if is_new_conversation:
+                        title = await generate_conversation_title(
+                            user_message=human_message.content
                         )
+                        if title:
+                            conversation.title = title
+                            await session.commit()
+                            logger.info(
+                                "Set conversation title conversation_id=%s title=%r",
+                                conversation_id,
+                                title,
+                            )
+
+                    async for event_type, data in runner.handle_message_stream(
+                        messages=messages,
+                        system_prompt=system_prompt,
+                        model=settings.rr_analyst_model,
+                        token=token,
+                        conversation_id=conversation_id,
+                    ):
+                        if event_type == "message_complete":
+                            # Finalized, balanced message — persist it; never forward
+                            # the BaseMessage object to the browser.
+                            message = data["message"]
+                            _stamp_message_time(message)
+                            await repo.append_message(conversation, seq=seq, message=message)
+                            if isinstance(message, AIMessage):
+                                last_ai_message = message
+                                last_ai_seq = seq  # anchor feedback to this row's seq
+                                if message.usage_metadata:
+                                    completed_input_tokens = max(
+                                        completed_input_tokens,
+                                        message.usage_metadata.get("input_tokens") or 0,
+                                    )
+                                    completed_output_tokens += (
+                                        message.usage_metadata.get("output_tokens") or 0
+                                    )
+                            else:
+                                hidden_usage = message.additional_kwargs.get(
+                                    "usage_metadata"
+                                )
+                                if isinstance(hidden_usage, dict):
+                                    completed_side_input_tokens += (
+                                        hidden_usage.get("input_tokens") or 0
+                                    )
+                                    completed_output_tokens += (
+                                        hidden_usage.get("output_tokens") or 0
+                                    )
+                            seq += 1
+                            await session.commit()
+                            partial_buffer = ""  # this turn finalized cleanly
+                            continue
+
+                        if event_type == "text_delta":
+                            partial_buffer += data.get("delta", "")
+
+                        if event_type == "done":
+                            usage = data.get("usage") or {}
+                            secondary_usage = data.get("secondary_usage") or {}
+                            by_iteration = data.get("usage_by_iteration") or []
+                            # Each iteration resends the previous one's prompt, so
+                            # the largest prompt already covers them all; summing
+                            # would bill the same context once per iteration.
+                            settled_input = max(
+                                (i.get("input_tokens") or 0 for i in by_iteration),
+                                default=usage.get("input_tokens") or 0,
+                            )
+                            settled_output = (usage.get("output_tokens") or 0) + (
+                                secondary_usage.get("output_tokens") or 0
+                            )
+                            await _settle_user_tokens(
+                                user_id=user_id,
+                                enterprise_id=enterprise_id,
+                                is_internal_user=is_internal_user,
+                                internal_user_id=internal_user_id,
+                                input_tokens=settled_input,
+                                output_tokens=settled_output,
+                                side_input_tokens=secondary_usage.get("input_tokens") or 0,
+                                human_message_id=human_row.id,
+                            )
+                            usage_settled = True
+                            thinking = (
+                                _extract_thinking(last_ai_message.content)
+                                if last_ai_message is not None
+                                else None
+                            )
+                            data = {
+                                "conversation_id": conversation_id,
+                                "usage": data.get("usage"),
+                                "usage_by_iteration": data.get("usage_by_iteration"),
+                                "reasoning": thinking,
+                                # The final assistant message's own row seq — matches the
+                                # seq replayed via GET /conversations/{id}, so feedback
+                                # keyed by (conversation_id, seq) lines up either way.
+                                "seq": last_ai_seq,
+                            }
+                            logger.info(
+                                "Request cycle done conversation_id=%s user_id=%s "
+                                "enterprise_id=%s messages=%d usage=%s",
+                                conversation_id,
+                                user_id,
+                                enterprise_id,
+                                seq,
+                                data.get("usage"),
+                            )
+
+                        yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+                    # First exchange on a fresh conversation — title it from the
+                    # opening user/assistant turn with a small Haiku call. Runs after
+                    # the answer has fully streamed, so it never delays the response;
+                    # best-effort, so a failure leaves the conversation untitled.
+
+                except asyncio.CancelledError:
+                    # Client stopped / disconnected mid-stream. Persist whatever
+                    # assistant text streamed so far as a display-only partial row
+                    # (excluded from replay) so it survives a refresh, then re-raise.
+                    # Use a fresh session shielded from the in-flight cancellation:
+                    # the streaming session above is already unwinding, and the
+                    # commit must not be interrupted.
+                    text = partial_buffer.strip()
+                    if text:
+                        await asyncio.shield(
+                            _persist_partial(
+                                uuid.UUID(conversation_id),
+                                user_id=user_id,
+                                enterprise_id=enterprise_id,
+                                internal_user_id=internal_user_id,
+                                is_internal_user=is_internal_user,
+                                text=text,
+                            )
+                        )
+                    raise
+                except Exception as e:
+                    logger.exception("SSE stream error")
+                    if span:
+                        span.update(level="ERROR", status_message=str(e))
+                    await asyncio.to_thread(
+                        alert_slack, f"chat_turn conversation_id={conversation_id}", e
                     )
+                    # Intentional AppErrors (e.g. NotFoundError) already carry a
+                    # safe, user-facing message; anything else is an unexpected
+                    # failure, so don't leak its raw text (SQL, stack internals) to
+                    # the browser.
+                    user_message = (
+                        e.message
+                        if isinstance(e, AppError)
+                        else "Something went wrong. Please try again."
+                    )
+                    payload = json.dumps({"code": "internal_error", "message": user_message})
+                    yield f"event: error\ndata: {payload}\n\n"
+                finally:
+                    if not usage_settled and (
+                        completed_input_tokens > 0
+                        or completed_side_input_tokens > 0
+                        or completed_output_tokens > 0
+                    ):
+                        await asyncio.shield(
+                            _settle_user_tokens(
+                                user_id=user_id,
+                                enterprise_id=enterprise_id,
+                                is_internal_user=is_internal_user,
+                                internal_user_id=internal_user_id,
+                                input_tokens=completed_input_tokens,
+                                output_tokens=completed_output_tokens,
+                                side_input_tokens=completed_side_input_tokens,
+                                human_message_id=human_row.id,
+                            )
+                        )
 
     return StreamingResponse(
         event_stream(),

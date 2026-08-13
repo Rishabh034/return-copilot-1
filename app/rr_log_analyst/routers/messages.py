@@ -341,61 +341,61 @@ async def send_message(
                         if event_type == "text_delta":
                             partial_buffer += data.get("delta", "")
 
-                    if event_type == "done":
-                        usage = data.get("usage") or {}
-                        secondary_usage = data.get("secondary_usage") or {}
-                        by_iteration = data.get("usage_by_iteration") or []
-                        # Each iteration resends the previous one's prompt, so
-                        # the largest prompt already covers them all; summing
-                        # would bill the same context once per iteration.
-                        settled_input = max(
-                            (i.get("input_tokens") or 0 for i in by_iteration),
-                            default=usage.get("input_tokens") or 0,
-                        )
-                        settled_output = (usage.get("output_tokens") or 0) + (
-                            secondary_usage.get("output_tokens") or 0
-                        )
-                        await _settle_user_tokens(
-                            user_id=user_id,
-                            enterprise_id=enterprise_id,
-                            is_internal_user=is_internal_user,
-                            internal_user_id=internal_user_id,
-                            input_tokens=settled_input,
-                            output_tokens=settled_output,
-                            side_input_tokens=secondary_usage.get("input_tokens") or 0,
-                            human_message_id=human_row.id,
-                        )
-                        usage_settled = True
-                        thinking = (
-                            _extract_thinking(last_ai_message.content)
-                            if last_ai_message is not None
-                            else None
-                        )
-                        data = {
-                            "conversation_id": conversation_id,
-                            "usage": data.get("usage"),
-                            "usage_by_iteration": data.get("usage_by_iteration"),
-                            "reasoning": thinking,
-                            # The final assistant message's own row seq — matches the
-                            # seq replayed via GET /conversations/{id}, so feedback
-                            # keyed by (conversation_id, seq) lines up either way.
-                            "seq": last_ai_seq,
-                        }
-                        logger.info(
-                            "Request cycle done conversation_id=%s user_id=%s "
-                            "enterprise_id=%s messages=%d usage=%s scratchpad_usage=%s "
-                            "billed_input=%d (max of %d iterations, not the sum)",
-                            conversation_id,
-                            user_id,
-                            enterprise_id,
-                            seq,
-                            data.get("usage"),
-                            # Haiku/scratchpad tokens are billed separately and are often
-                            # comparable to the main model's — without this they are invisible.
-                            secondary_usage,
-                            settled_input,
-                            len(by_iteration),
-                        )
+                        if event_type == "done":
+                            usage = data.get("usage") or {}
+                            secondary_usage = data.get("secondary_usage") or {}
+                            by_iteration = data.get("usage_by_iteration") or []
+                            # Each iteration resends the previous one's prompt, so
+                            # the largest prompt already covers them all; summing
+                            # would bill the same context once per iteration.
+                            settled_input = max(
+                                (i.get("input_tokens") or 0 for i in by_iteration),
+                                default=usage.get("input_tokens") or 0,
+                            )
+                            settled_output = (usage.get("output_tokens") or 0) + (
+                                secondary_usage.get("output_tokens") or 0
+                            )
+                            await _settle_user_tokens(
+                                user_id=user_id,
+                                enterprise_id=enterprise_id,
+                                is_internal_user=is_internal_user,
+                                internal_user_id=internal_user_id,
+                                input_tokens=settled_input,
+                                output_tokens=settled_output,
+                                side_input_tokens=secondary_usage.get("input_tokens") or 0,
+                                human_message_id=human_row.id,
+                            )
+                            usage_settled = True
+                            thinking = (
+                                _extract_thinking(last_ai_message.content)
+                                if last_ai_message is not None
+                                else None
+                            )
+                            data = {
+                                "conversation_id": conversation_id,
+                                "usage": data.get("usage"),
+                                "usage_by_iteration": data.get("usage_by_iteration"),
+                                "reasoning": thinking,
+                                # The final assistant message's own row seq — matches the
+                                # seq replayed via GET /conversations/{id}, so feedback
+                                # keyed by (conversation_id, seq) lines up either way.
+                                "seq": last_ai_seq,
+                            }
+                            logger.info(
+                                "Request cycle done conversation_id=%s user_id=%s "
+                                "enterprise_id=%s messages=%d usage=%s scratchpad_usage=%s "
+                                "billed_input=%d (max of %d iterations, not the sum)",
+                                conversation_id,
+                                user_id,
+                                enterprise_id,
+                                seq,
+                                data.get("usage"),
+                                # Haiku/scratchpad tokens are billed separately and are often
+                                # comparable to the main model's — without this they are invisible.
+                                secondary_usage,
+                                settled_input,
+                                len(by_iteration),
+                            )
 
                         yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 

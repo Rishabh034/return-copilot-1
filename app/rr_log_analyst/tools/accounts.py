@@ -5,7 +5,7 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from app.rr_log_analyst.tools._common import as_list
+from app.rr_log_analyst.tools._common import as_list, cached_fetch
 from app.rr_log_analyst.tools.context import ToolContext
 from app.rr_log_analyst.tools.flow_config import EmptyInput
 
@@ -46,7 +46,13 @@ def _matches(acc: dict, query: str) -> bool:
 
 
 async def _fetch_shaped_accounts(context: ToolContext) -> list[dict]:
-    raw = await context.clickpost_client.list_accounts(token=context.token)
+    # Shares the ("accounts",) cache entry with load_distribution, which needs the
+    # same payload as an id lookup on every one of its calls.
+    raw = await cached_fetch(
+        context,
+        ("accounts",),
+        lambda: context.clickpost_client.list_accounts(token=context.token),
+    )
     return [_shape_account(a) for a in as_list(raw)]
 
 
@@ -90,23 +96,9 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
             name="get_account_info",
             description=(
                 "PRIMARY — Carrier account metadata for the enterprise. Omit query to list all accounts; "
-                "pass query to filter by account_id, account_code, cp_name, or cpid. If too large, use "
-                "summarize_accounts or search_accounts."
+                "pass query to filter by account_id, account_code, cp_name, or cpid. Narrow the query "
+                "when you only need a few accounts — a full listing is large on enterprises with many."
             ),
             args_schema=GetAccountInfoInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=search_accounts,
-            name="search_accounts",
-            description="SUB-TOOL — Filter accounts by query substring (same as get_account_info with query).",
-            args_schema=SearchAccountsInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=summarize_accounts,
-            name="summarize_accounts",
-            description=(
-                "SUB-TOOL — Compact account overview: total count and carrier brand names only."
-            ),
-            args_schema=EmptyInput,
-        ),
+        )
     ]

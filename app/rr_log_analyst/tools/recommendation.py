@@ -19,6 +19,7 @@ PipelineStage = Literal[
     "1_blacklisted_accounts",
     "2_serviceable_accounts_filter",
     "2_1_serviceable_oda_accounts_filter",
+    "2_3_1_attribute_rules_matched",
     "clickpost_defined_and_custom_rule_matched",
     "3_clickpost_filters_rules_list",
     "3_clickpost_define_and_custom_filters_accounts_applied",
@@ -173,34 +174,9 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
             coroutine=run_recommendation,
             name="run_recommendation",
             description=(
-                "PRIMARY — Re-run the recommendation engine for an order. Returns full pipeline trace "
-                "(filters_ran) and complete preference_array, same shape as fetch_rr_log. If too large, "
-                "use summarize_recommendation or get_recommendation_* sub-tools."
+                "PRIMARY — Re-run the recommendation engine for an order. Returns the pipeline trace "
+                "(filters_ran) and the ranked preference_array, same shape as fetch_rr_log."
             ),
             args_schema=RunRecommendationInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=summarize_recommendation,
-            name="summarize_recommendation",
-            description="SUB-TOOL — Compact simulation result when run_recommendation is too large.",
-            args_schema=SummarizeRecommendationInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=get_recommendation_pipeline,
-            name="get_recommendation_pipeline",
-            description=f"SUB-TOOL — One pipeline stage from a simulation. Stages: {_stages_hint}.",
-            args_schema=RecommendationPipelineInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=get_recommendation_ranking,
-            name="get_recommendation_ranking",
-            description="SUB-TOOL — Final ranking from simulation; filter by account_id/cp_name or top N.",
-            args_schema=RecommendationRankingInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=search_recommendation_courier,
-            name="search_recommendation_courier",
-            description="SUB-TOOL — Trace one courier through a simulation. Requires account_id or cp_name.",
-            args_schema=RecommendationCourierSearchInput,
-        ),
+        )
     ]

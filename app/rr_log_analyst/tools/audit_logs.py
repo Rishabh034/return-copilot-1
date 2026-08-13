@@ -399,17 +399,5 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
                 "This tool allows at most 7 days per call."
             ),
             args_schema=FetchAuditLogsInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=fetch_audit_logs_for_rule,
-            name="fetch_audit_logs_for_rule",
-            description=(
-                "Resolve a rule, then fetch audit logs for the calendar date of the rule's "
-                "updated_at with action_taken (default Allocation). Returns matching_logs "
-                "where payload id/name matches the rule, plus all logs that day. "
-                "Rule updated_at and log updated_at may differ; empty matching_logs does not "
-                "prove no change — widen the date range with fetch_audit_logs."
-            ),
-            args_schema=FetchAuditLogsForRuleInput,
-        ),
+        )
     ]

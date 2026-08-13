@@ -184,19 +184,5 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
                 "Call early when explaining pipeline behaviour."
             ),
             args_schema=EmptyInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=summarize_flow_config,
-            name="summarize_flow_config",
-            description="SUB-TOOL — Compact flow config (flow_summary + flags only, same as primary).",
-            args_schema=EmptyInput,
-        ),
-        StructuredTool.from_function(
-            coroutine=get_flow_config_flag,
-            name="get_flow_config_flag",
-            description=(
-                "SUB-TOOL — Look up one flow-config flag, e.g. load_distribution, ordered_list, recs."
-            ),
-            args_schema=GetFlowConfigFlagInput,
-        ),
+        )
     ]

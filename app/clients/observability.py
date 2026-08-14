@@ -1,9 +1,16 @@
 """
-Wires this app's two LLM call paths up to self-hosted Langfuse for tracing:
-LangChain's ChatAnthropic (app/clients/llm.py) via its callback handler, and
-the raw Anthropic SDK wrapper (app/agenticintegrations/client.py) via OTEL
-auto-instrumentation, which patches the anthropic package globally so no
-call-site changes are needed there.
+Wires this app's LLM calls up to self-hosted Langfuse for tracing.
+
+Every LLM call in the API process goes through LangChain's ChatAnthropic
+(main agent, scratchpad, and title), so the LangChain CallbackHandler alone
+captures all of them. We deliberately do NOT enable the global OTEL
+AnthropicInstrumentor here: ChatAnthropic calls the `anthropic` SDK under the
+hood, so instrumenting it would trace every call twice (a `ChatAnthropic`
+observation from the callback AND an `anthropic.chat` observation from OTEL)
+and double-count cost on the parent span. The only raw-SDK caller,
+app/agenticintegrations/client.py, runs in a separate consumer process that
+never calls init_langfuse(); if that path ever needs tracing, instrument it
+there rather than globally here.
 
 No-ops entirely when `settings.langfuse_enabled` is false, so this is safe to
 call unconditionally at startup.
@@ -14,6 +21,7 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import ExitStack, contextmanager
+from typing import Any
 
 from app.config import settings
 
@@ -42,13 +50,11 @@ def init_langfuse() -> None:
 
     from langfuse import get_client
     from langfuse.langchain import CallbackHandler
-    from opentelemetry.instrumentation.anthropic import AnthropicInstrumentor
 
     global _langchain_handler_cls
     _langchain_handler_cls = CallbackHandler
 
     client = get_client()
-    AnthropicInstrumentor().instrument()
 
     try:
         if client.auth_check():
@@ -75,22 +81,74 @@ def shutdown_langfuse() -> None:
     get_client().flush()
 
 
-def langchain_trace_config(session_id: str | None = None) -> dict:
+def langfuse_identity(
+    *,
+    conversation_id: str,
+    enterprise_id: int,
+    user_id: int,
+    is_internal_user: bool,
+    internal_user_id: str | None,
+) -> dict[str, Any]:
+    """Build kwargs for `trace_span` so cost rolls up enterprise → user → session."""
+    user_type = "internal" if is_internal_user else "external"
+    langfuse_user = (
+        f"ent:{enterprise_id}_"+
+        f"int:{internal_user_id}"
+        if is_internal_user and internal_user_id
+        else f"ext:{user_id}"
+    )
+    metadata: dict[str, str] = {
+        "enterprise_id": str(enterprise_id),
+        "dashboard_user_id": str(user_id),
+        "user_type": user_type,
+    }
+    if internal_user_id:
+        metadata["internal_user_id"] = internal_user_id
+
+    return {
+        "session_id": conversation_id,
+        "user_id": langfuse_user,
+        "tags": [f"enterprise:{enterprise_id}", f"user_type:{user_type}"],
+        "metadata": metadata,
+    }
+
+
+def langchain_trace_config(
+    session_id: str | None = None,
+    *,
+    user_id: str | None = None,
+) -> dict:
     """Build a LangChain `config=` dict that routes a call through Langfuse.
 
     Returns {} when tracing is disabled, so callers can pass this through
     unconditionally without branching on settings.langfuse_enabled themselves.
+    Nested under `trace_span` + propagate_attributes, session/user also inherit
+    from the parent; these metadata keys keep Sonnet/Haiku invokes attributable
+    even if a call is treated as its own chain root.
     """
     if _langchain_handler_cls is None:
         return {}
     config: dict = {"callbacks": [_langchain_handler_cls()]}
+    metadata: dict[str, str] = {}
     if session_id:
-        config["metadata"] = {"langfuse_session_id": session_id}
+        metadata["langfuse_session_id"] = session_id
+    if user_id:
+        metadata["langfuse_user_id"] = user_id
+    if metadata:
+        config["metadata"] = metadata
     return config
 
 
 @contextmanager
-def trace_span(name: str, **kwargs):
+def trace_span(
+    name: str,
+    *,
+    session_id: str | None = None,
+    user_id: str | None = None,
+    tags: list[str] | None = None,
+    metadata: dict[str, str] | None = None,
+    **kwargs,
+):
     """Wrap a block of work in a Langfuse span, or a no-op if tracing is disabled.
 
     Any LangChain calls made inside the block (via langchain_trace_config)
@@ -105,12 +163,20 @@ def trace_span(name: str, **kwargs):
         yield None
         return
 
-    from langfuse import get_client
+    from langfuse import get_client, propagate_attributes
 
     with ExitStack() as stack:
         try:
             span = stack.enter_context(
                 get_client().start_as_current_observation(name=name, **kwargs)
+            )
+            stack.enter_context(
+                propagate_attributes(
+                    user_id=user_id,
+                    session_id=session_id,
+                    tags=tags,
+                    metadata=metadata,
+                )
             )
         except Exception:
             logger.exception("Failed to open Langfuse span %r; continuing untraced", name)

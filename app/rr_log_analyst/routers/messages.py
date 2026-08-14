@@ -14,7 +14,7 @@ from sqlalchemy import update
 from datetime import datetime
 from app.db import AsyncSessionLocal
 from app.dependencies.auth import resolve_identity
-from app.clients.observability import trace_span
+from app.clients.observability import langfuse_identity, trace_span
 from app.exceptions import AppError, NotFoundError, BadRequestError
 from app.utilities.alerts import alert_slack
 from app.rr_log_analyst.agent import AgentRunner, build_system_prompt
@@ -252,7 +252,14 @@ async def send_message(
             usage_settled = False
 
             with trace_span(
-                "chat_turn", metadata={"langfuse_session_id": conversation_id}
+                "chat_turn",
+                **langfuse_identity(
+                    conversation_id=conversation_id,
+                    enterprise_id=enterprise_id,
+                    user_id=user_id,
+                    is_internal_user=is_internal_user,
+                    internal_user_id=internal_user_id,
+                ),
             ) as span:
                 try:
                     # Create-or-attach the conversation and persist the user's message
@@ -287,7 +294,8 @@ async def send_message(
 
                     if is_new_conversation:
                         title = await generate_conversation_title(
-                            user_message=human_message.content
+                            user_message=human_message.content,
+                            conversation_id=conversation_id,
                         )
                         if title:
                             conversation.title = title

@@ -35,6 +35,7 @@ def _coerce_text(content: str | list) -> str:
 async def generate_conversation_title(
     *,
     user_message: str | list,
+    conversation_id: str | None = None,
 ) -> str | None:
     """Make a small Haiku call to title a conversation from its first exchange.
 
@@ -57,7 +58,7 @@ async def generate_conversation_title(
                 SystemMessage(content=_TITLE_SYSTEM_PROMPT),
                 HumanMessage(content=prompt),
             ],
-            config=langchain_trace_config(),
+            config=langchain_trace_config(conversation_id),
         )
         title = _coerce_text(response.content).strip().strip('"').strip()
         if not title:

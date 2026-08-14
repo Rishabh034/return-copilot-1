@@ -204,7 +204,10 @@ async def summarize_raw_data_parts(
             # Bound the fan-out: an unbounded gather over dozens of parts
             # self-throttles into retries and long tail latency.
             async with semaphore:
-                return await llm.ainvoke([HumanMessage(content=prompt)])
+                return await llm.ainvoke(
+                    [HumanMessage(content=prompt)],
+                    config=langchain_trace_config(conversation_id),
+                )
         except Exception:
             logger.exception(
                 "Scratchpad Haiku summarization failed on part %d/%d for tool %s",
@@ -234,10 +237,13 @@ async def build_scratchpad(
     tool_name: str,
     tool_args: dict[str, Any],
     result: dict[str, Any],
+    conversation_id: str | None = None,
 ) -> ScratchpadBuildResult:
     """Prepare raw parts from full tool data, then summarize each in a separate Haiku call."""
     raw_parts = prepare_raw_data_parts(result)
-    return await summarize_raw_data_parts(llm, tool_name, tool_args, raw_parts)
+    return await summarize_raw_data_parts(
+        llm, tool_name, tool_args, raw_parts, conversation_id=conversation_id
+    )
 
 
 def fallback_scratchpad(tool_name: str, result: dict[str, Any]) -> ScratchpadBuildResult:

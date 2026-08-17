@@ -13,24 +13,24 @@ from app.rr_log_analyst.memory.tool_results import tool_result_store
 logger = logging.getLogger(__name__)
 
 
-def build_system_message(system_prompt: str) -> SystemMessage:
-    """System message, marked as a prompt-cache breakpoint when caching is on.
-
-    A breakpoint caches the whole prefix before it — for Anthropic that ordering
-    is tools, then system — so this single block covers the bound tool schemas
-    plus the knowledge-base prompt, which are identical on every iteration.
-    """
+def build_system_message(
+    system_prompt: str, context_note: str | None = None
+) -> SystemMessage:
+    """System message split at the prompt-cache breakpoint. """
     if not settings.prompt_caching_enabled:
-        return SystemMessage(content=system_prompt)
-    return SystemMessage(
-        content=[
-            {
-                "type": "text",
-                "text": system_prompt,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ]
-    )
+        joined = f"{system_prompt}\n{context_note}" if context_note else system_prompt
+        return SystemMessage(content=joined)
+
+    blocks: list[dict] = [
+        {
+            "type": "text",
+            "text": system_prompt,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    if context_note:
+        blocks.append({"type": "text", "text": context_note})
+    return SystemMessage(content=blocks)
 
 
 def serialize_usage(usage_metadata: UsageMetadata | None) -> dict[str, int] | None:

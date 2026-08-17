@@ -317,6 +317,7 @@ class AgentRunner:
         model: str,
         token: str,
         conversation_id: str,
+        context_note: str | None = None,
     ) -> AsyncGenerator[tuple[str, dict[str, Any]], None]:
         """Agentic loop using ChatAnthropic.bind_tools(). Yields SSE event tuples."""
 
@@ -348,7 +349,10 @@ class AgentRunner:
                     ),
                 ]
 
-            llm_input: list[BaseMessage] = [build_system_message(system_prompt), *trimmed]
+            llm_input: list[BaseMessage] = [
+                build_system_message(system_prompt, context_note),
+                *trimmed,
+            ]
 
             if use_scratchpad and not is_last:
                 user_text = _latest_user_text(trimmed)

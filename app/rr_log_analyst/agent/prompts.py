@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import logging
+from functools import lru_cache
 from pathlib import Path
-from typing import Any
-
-logger = logging.getLogger(__name__)
 
 
 _KNOWLEDGE_DIR = Path(__file__).resolve().parent.parent / "knowledge"
@@ -81,7 +78,14 @@ You never assert a rule, score, flag state, or outcome the fetched data does not
 </limitations>
 """
 
+@lru_cache(maxsize=1)
 def _load_knowledge_files() -> str:
+    """Read and join the knowledge base. Cached — the content never varies.
+
+    Read once per process rather than re-globbing and re-reading every .md on
+    every user message. Editing a knowledge file therefore needs a restart to
+    take effect (the dev server's autoreload already handles that).
+    """
     if not _KNOWLEDGE_DIR.is_dir():
         return ""
     files = sorted(_KNOWLEDGE_DIR.glob("*.md"))
@@ -95,17 +99,29 @@ def _load_knowledge_files() -> str:
 
 
 
-async def build_system_prompt(
-    clickpost_client: Any | None = None,
+def build_system_prompt() -> str:
+    """The stable half of the system prompt — identical for every user and message.
+
+    Takes no arguments by design. This is the text that carries the prompt-cache
+    breakpoint, and the cache matches on exact bytes, so anything request-specific
+    added here would give every caller its own cache entry instead of one entry
+    shared across the organization. Per-request context belongs in
+    build_context_note, which is sent after the breakpoint.
+
+    Deliberately not async: there is nothing to await, and keeping it sync makes it
+    harder to slip in a fetch of enterprise-specific data later.
+    """
+    return "\n".join([_ROLE_PREAMBLE, "", _load_knowledge_files()])
+
+
+def build_context_note(
     *,
-    token: str | None = None,
     enterprise_id: int | None = None,
     message_time: str | None = None,
     enterprise_name: str | None = None,
     username: str | None = None,
-) -> str:
-    parts = [_ROLE_PREAMBLE, "", _load_knowledge_files()]
-
+) -> str | None:
+    """The volatile half — who is asking, and when. Never cached."""
     context_lines: list[str] = []
     if enterprise_id is not None:
         if enterprise_name:
@@ -121,7 +137,6 @@ async def build_system_prompt(
         context_lines.append(f"- Current message time: **{message_time}**.")
     if username:
         context_lines.append(f"- User: **{username}**.")
-    if context_lines:
-        parts.append("\n## Context\n\n" + "\n".join(context_lines))
-
-    return "\n".join(parts)
+    if not context_lines:
+        return None
+    return "\n## Context\n\n" + "\n".join(context_lines)

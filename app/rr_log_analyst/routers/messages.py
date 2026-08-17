@@ -17,7 +17,7 @@ from app.dependencies.auth import resolve_identity
 from app.clients.observability import langfuse_identity, trace_span
 from app.exceptions import AppError, NotFoundError, BadRequestError
 from app.utilities.alerts import alert_slack
-from app.rr_log_analyst.agent import AgentRunner, build_system_prompt
+from app.rr_log_analyst.agent import AgentRunner, build_context_note, build_system_prompt
 from app.rr_log_analyst.auth import (
     resolve_internal_user_id,
     resolve_is_internal_user,
@@ -196,9 +196,8 @@ async def send_message(
     raw_message = body.message
     display_message = raw_message.strip()
 
-    system_prompt = await build_system_prompt(
-        clickpost_client,
-        token=token,
+    system_prompt = build_system_prompt()
+    context_note = build_context_note(
         enterprise_id=enterprise_id,
         message_time=body.message_time,
         enterprise_name=enterprise_name,
@@ -309,6 +308,7 @@ async def send_message(
                     async for event_type, data in runner.handle_message_stream(
                         messages=messages,
                         system_prompt=system_prompt,
+                        context_note=context_note,
                         model=settings.rr_analyst_model,
                         token=token,
                         conversation_id=conversation_id,

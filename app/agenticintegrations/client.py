@@ -38,6 +38,7 @@ class ClaudeClient:
         system: str | list[dict] | None = None,
         tools: list[dict] | None = None,
         tool_choice: dict | None = None,
+        output_config: dict | None = None,
         **kwargs: Any,
     ):
         """Single non-streaming call with exponential backoff on transient errors."""
@@ -52,6 +53,8 @@ class ClaudeClient:
             payload["tools"] = tools
         if tool_choice:
             payload["tool_choice"] = tool_choice
+        if output_config:
+            payload["output_config"] = output_config
         payload.update(kwargs)
 
         last_exc: Exception | None = None

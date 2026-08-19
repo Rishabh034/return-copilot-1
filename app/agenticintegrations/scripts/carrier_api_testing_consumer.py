@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 class CarrierAPITestingConsumer:
     def __init__(self):
         self._agent = Agent(
+            system_prompt_name="system_prompt_testing_agent",
             client=ClaudeClient(
                 api_key=settings.AGENTIC_INTEGRATIONS_ANTHROPIC_API_KEY,
                 model="claude-sonnet-4-6",
@@ -73,7 +74,7 @@ class CarrierAPITestingConsumer:
 
         if failed_requests_data:
             file_path = f"/tmp/failed_requests_data_{carrier_partner_name}_{time.time()}.csv"
-            with open(file_path, "r") as fobj:
+            with open(file_path, "w") as fobj:
                 writer = csv.writer(fobj)
 
                 writer.writerow([
@@ -133,9 +134,10 @@ class CarrierAPITestingConsumer:
             testing_request = TestingConsumerRequest(**topic_payload)
             result_collector = ResultCollector()
             content = list()
+            document_count = len(testing_request.api_document)
             if testing_request.api_document_type == "PDF":
                 user_prompt = f"""
-                The carrier documentation is available as a PDF which has been provided to you. 
+                The carrier documentation is available as {document_count} PDF file(s) which have been provided to you.
                 The test credentials are as follows: <data>{json.dumps(testing_request.test_credentials)}</data>
                 """
                 content = [
@@ -143,18 +145,20 @@ class CarrierAPITestingConsumer:
                         "type": "document",
                         "source": {
                             "type": "url",
-                            "url": testing_request.api_document
-                        }
-                    },
-                    {
-                        "type": "text",
-                        "text": user_prompt
+                            "url": url
+                        },
+                        "title": f"Carrier documentation file {index} of {document_count}"
                     }
+                    for index, url in enumerate(testing_request.api_document, start=1)
                 ]
+                content.append({
+                    "type": "text",
+                    "text": user_prompt
+                })
             elif testing_request.api_document_type == "CURL":
                 user_prompt = f"""
-                The carrier documentation is available as a text file containing the request cURLS,
-                which has been provided to you. The test crendentials are as follows: 
+                The carrier documentation is available as {document_count} text file(s) containing the request cURLS,
+                which have been provided to you. The test crendentials are as follows:
                 <data>{json.dumps(testing_request.test_credentials)}</data>
                 """
                 content = [
@@ -162,18 +166,24 @@ class CarrierAPITestingConsumer:
                         "type": "document",
                         "source": {
                             "type": "url",
-                            "url": testing_request.api_document
-                        }
-                    },
-                    {
-                        "type": "text",
-                        "text": user_prompt
+                            "url": url
+                        },
+                        "title": f"Carrier documentation file {index} of {document_count}"
                     }
+                    for index, url in enumerate(testing_request.api_document, start=1)
                 ]
+                content.append({
+                    "type": "text",
+                    "text": user_prompt
+                })
             elif testing_request.api_document_type == "LINK":
+                documentation_links = "\n".join(
+                    f"{index}. {url}" for index, url in enumerate(testing_request.api_document, start=1)
+                )
                 user_prompt = f"""
-                The carrier documentation is available as a documentation link on the web.
-                The documentation link is: {testing_request.api_document}.
+                The carrier documentation is available as {document_count} documentation link(s) on the web.
+                The documentation links are:
+                {documentation_links}
                 The test credentials are as follows: <data>{json.dumps(testing_request.test_credentials)}</data>
                 """
                 content = [
@@ -222,9 +232,13 @@ KafkaService.start_consumer(
 # Local testing
 # consumer = CarrierAPITestingConsumer()
 # payload = {
+#     "integration_type": "SPS",
+#     "integration_region": "DOMESTIC",
+#     "integration_delivery_type": "FORWARD",
 #     "api_document_type": "PDF",
-#     "api_document":
-#         "https://pyck-res-bucket.s3.ap-southeast-1.amazonaws.com/courier_documentation/beingships-documentation.pdf",
+#     "api_document": [
+#         "https://pyck-res-bucket.s3.ap-southeast-1.amazonaws.com/courier_documentation/beingships-documentation.pdf"
+#     ],
 #     "test_credentials": {
 #         "api_key": "Lorem ipsum"
 #     },

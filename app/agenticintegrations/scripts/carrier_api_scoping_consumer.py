@@ -198,6 +198,16 @@ class CarrierAPIScopingConsumer:
             else:
                 logger.info("No matching API document type found")
 
+            if content and scoping_request.additional_information:
+                content.append({
+                    "type": "text",
+                    "text": f"""
+                    Additional information provided by a human to clarify open queries/ambiguity raised in a
+                    previous run for this carrier:
+                    <data>{scoping_request.additional_information}</data>
+                    """
+                })
+
             if content:
                 logger.info("Invoking scoping agent for carrier: %s (%d document(s))",
                             scoping_request.carrier_partner_name, document_count)
@@ -248,6 +258,7 @@ KafkaService.start_consumer(
 #         "api_key": "Lorem ipsum"
 #     },
 #     "carrier_partner_name": "Being Ships",
-#     "jira_ticket_id": "CPD-9403"
+#     "jira_ticket_id": "CPD-9403",
+#     "additional_information": "Lorem ipsum"
 # }
 # consumer.consume(payload)

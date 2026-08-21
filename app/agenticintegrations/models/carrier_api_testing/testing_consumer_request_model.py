@@ -10,3 +10,4 @@ class TestingConsumerRequest(BaseModel):
     carrier_partner_name: str
     test_credentials: dict
     jira_ticket_id: str
+    additional_information: str | None = None

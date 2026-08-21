@@ -195,6 +195,16 @@ class CarrierAPITestingConsumer:
             else:
                 logger.info("No matching API document type found")
 
+            if content and testing_request.additional_information:
+                content.append({
+                    "type": "text",
+                    "text": f"""
+                    Additional information provided by a human to clarify open queries/ambiguity raised in a
+                    previous run for this carrier:
+                    <data>{testing_request.additional_information}</data>
+                    """
+                })
+
             if content:
                 result = self._agent.run(
                     user_input=content,
@@ -243,7 +253,8 @@ KafkaService.start_consumer(
 #         "api_key": "Lorem ipsum"
 #     },
 #     "carrier_partner_name": "Being Ships",
-#     "jira_ticket_id": "CPD-9403"
+#     "jira_ticket_id": "CPD-9403",
+#     "additional_information": "Lorem ipsum"
 # }
 # consumer.consume(payload)
 

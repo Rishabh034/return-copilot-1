@@ -10,3 +10,4 @@ class ScopingConsumerRequest(BaseModel):
     test_credentials: dict
     carrier_partner_name: str
     jira_ticket_id: str
+    additional_information: str | None = None

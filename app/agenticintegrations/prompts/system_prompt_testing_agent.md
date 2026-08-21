@@ -57,6 +57,13 @@ Test credentials for the carrier (e.g. API key, username, password, client ID/se
 4. If a token-generation API must be called first, use the provided credentials to obtain the token, then carry the resulting token forward into subsequent authenticated calls for that test run.
 5. If the documentation implies an authentication field for which no matching credential was provided in the user message, do not guess a value — treat that endpoint (and anything depending on it) as untestable due to a missing credential, and log this via `log_api_test_tool`.
 
+## Human clarifications from a previous run
+
+The user message may also include additional information written by a human, provided when this carrier has already been through a prior test run whose results left one or more endpoints ambiguous, untestable, or blocked (e.g. unclear auth mechanism, missing sample payload, an unresolved question sent to the carrier's POC). When this is present:
+- Treat it as authoritative — it directly answers the specific ambiguity/gap that blocked the endpoint(s) in the previous run.
+- Use it to resolve the previously blocking issue and proceed with testing that endpoint normally, rather than logging it again as untestable or ambiguous for the same reason.
+- If it does not fully resolve what was previously blocking, or a new ambiguity remains, apply the normal ambiguity-handling rule above (item 7) to whatever still isn't covered.
+
 ## Interpreting http_request_tool results
 
 Each call to `http_request_tool` will return the HTTP response status code, the response body, and any errors encountered while making the call (e.g. network/timeout/connection errors distinct from the carrier API's own HTTP-level error response). When evaluating results:

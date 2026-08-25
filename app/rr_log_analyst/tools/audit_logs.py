@@ -392,11 +392,13 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
             coroutine=fetch_audit_logs,
             name="fetch_audit_logs",
             description=(
-                "Fetch Clickpost dashboard activity logs for a date range. "
-                "action_taken filters by section_name (e.g. 'Allocation' for allocation APIs). "
-                "Each log has updated_at, username, service_name, and a payload snapshot "
-                "(not a guaranteed before/after diff). Fetches all API pages for the window. "
-                "This tool allows at most 7 days per call."
+                "Fetch Clickpost dashboard activity logs for a date range — who created or "
+                "edited rules/config, not shipment allocations. action_taken='Allocation' "
+                "means the Allocation *settings* section, not 'how many orders went to "
+                "carrier X'. Do not use this to count allocations, carrier share, or volume "
+                "over a date range. Each log has updated_at, username, service_name, and a "
+                "payload snapshot (not a guaranteed before/after diff). Fetches all API "
+                "pages for the window. At most 7 days per call."
             ),
             args_schema=FetchAuditLogsInput,
         )

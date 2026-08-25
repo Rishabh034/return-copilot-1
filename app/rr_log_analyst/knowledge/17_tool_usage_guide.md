@@ -16,4 +16,5 @@ Fetch real data before explaining. Use injected enterprise context directly.
 | Per-filter LD on an order | `fetch_rr_log` | Prefer `load_distribution_applied` / `load_distribution_account_config`; config tool only if fields missing |
 | LD targets (terminal / filter) | `get_load_distribution_config` | `mode='forward'|'reverse'|'filter'`; optional `account_id` |
 | Account / courier lookup | `get_account_info` / `search_courier_partners` | |
-| Who changed rules | `fetch_audit_logs` | ≤7-day window, `action_taken=Allocation` |
+| Who changed rules | `fetch_audit_logs` | ≤7-day window, `action_taken=Allocation`. Dashboard config edits only — **never** for "how many times was X allocated" |
+| Carrier allocation counts / share / % / volume over a date range | **none — refuse, no tools** | No bulk aggregation. Redirect to Clickpost Analytics (carrier-wise shipment split). Offer per-order / serviceability / rules / LD instead |

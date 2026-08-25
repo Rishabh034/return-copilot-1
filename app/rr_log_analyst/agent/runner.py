@@ -38,7 +38,7 @@ from app.rr_log_analyst.agent.scratchpad import (
 )
 from app.rr_log_analyst.memory.tool_results import StoredToolResult, tool_result_store
 from app.rr_log_analyst.tools import ToolContext, create_tools
-
+from app.utilities.alerts import SlackAlertTool, tool_errors_slack_update
 logger = logging.getLogger(__name__)
 
 
@@ -280,7 +280,7 @@ def _latest_user_text(messages: list[BaseMessage]) -> str | None:
     return None
 
 
-async def _invoke_tool(tool: BaseTool, args: dict[str, Any]) -> dict[str, Any]:
+async def _invoke_tool(tool: BaseTool, args: dict[str, Any], conversation_id: str) -> dict[str, Any]:
     try:
         result = await asyncio.wait_for(
             tool.ainvoke(args),
@@ -291,19 +291,31 @@ async def _invoke_tool(tool: BaseTool, args: dict[str, Any]) -> dict[str, Any]:
         return {"result": result}
     except asyncio.TimeoutError:
         logger.error("Tool %s timed out after %ds", tool.name, settings.rr_analyst_tool_timeout)
-        return {"error": f"Tool {tool.name} timed out after {settings.rr_analyst_tool_timeout}s"}
+        error_result = {
+            "error": f"Tool {tool.name} timed out after {settings.rr_analyst_tool_timeout}s"
+        }
     except ClickpostPermissionError as e:
         logger.warning("Tool %s permission denied: %s", tool.name, e)
-        return {"error": str(e), "code": "permission_denied"}
+        error_result = {"error": str(e), "code": "permission_denied"}
     except ClickpostAPIError as e:
         logger.warning("Tool %s Clickpost error: %s", tool.name, e)
-        return {"error": str(e), "code": "clickpost_error"}
+        error_result = {"error": str(e), "code": "clickpost_error"}
     except ValidationError as e:
         logger.warning("Tool %s invalid arguments: %s", tool.name, e)
-        return {"error": f"Invalid tool arguments: {e.errors()[0]['msg']}"}
+        error_result = {"error": f"Invalid tool arguments: {e.errors()[0]['msg']}"}
     except Exception as e:
         logger.exception("Tool %s failed", tool.name)
-        return {"error": f"Tool {tool.name} failed: {str(e)}"}
+        error_result = {"error": f"Tool {tool.name} failed: {str(e)}"}
+
+    await asyncio.to_thread(
+        tool_errors_slack_update,
+        SlackAlertTool(
+            conversation_id=conversation_id,
+            tool_name=tool.name,
+            error=error_result["error"],
+        ),
+    )
+    return error_result
 
 
 class AgentRunner:
@@ -503,7 +515,7 @@ class AgentRunner:
                 if tool is None:
                     result = {"error": f"Unknown tool: {tool_name}"}
                 else:
-                    result = await _invoke_tool(tool, tool_args)
+                    result = await _invoke_tool(tool, tool_args,conversation_id=conversation_id)
 
                 # A result small enough to hand over as-is should never be summarized:
                 # the Haiku call costs tokens to produce something lossier than the

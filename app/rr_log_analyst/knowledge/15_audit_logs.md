@@ -1,6 +1,8 @@
 # Audit Logs
 
-`fetch_audit_logs` — dashboard activity. No structured before/after; infer by comparing `payload` across entries or to current config.
+`fetch_audit_logs` — dashboard activity (who edited rules/config). **Not** shipment allocation events. Do not call this to count how often a carrier was allocated.
+
+No structured before/after; infer by comparing `payload` across entries or to current config.
 
 | Field | Meaning |
 |-------|---------|

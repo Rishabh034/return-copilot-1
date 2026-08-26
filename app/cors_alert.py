@@ -1,7 +1,4 @@
 """Alerting for CORS preflights that CORSMiddleware turns away.
-
-Its own module rather than living in main.py so it can be imported — and
-therefore tested — without dragging in the router/database/LLM graph.
 """
 
 from __future__ import annotations
@@ -22,10 +19,9 @@ class CorsRejectionAlertMiddleware:
     alerts when CORSMiddleware turns away a preflight.
 
     this has to wrap CORSMiddleware (so it is registered *after* it, ending up
-    further out) because that rejection is returned, not raised — it never
+    further out) because that rejection is returned, not raised - it never
     reaches an exception handler, so unhandled_error_handler/alert_slack never
-    sees it. that is exactly how a missing origin stayed invisible while every
-    customer on it saw "Failed to fetch" in their browser.
+    sees it.
 
     a browser on a correctly listed origin never gets this response, so every
     hit is a real config bug and there is no rate to tune — we only dedupe per

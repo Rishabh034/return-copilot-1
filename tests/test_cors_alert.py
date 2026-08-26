@@ -1,7 +1,6 @@
 """CorsRejectionAlertMiddleware: does a rejected preflight reach Slack?
 
-The bug this guards against is not "CORS is misconfigured" — that will happen
-again — it is that the misconfiguration was *silent*. CORSMiddleware returns its
+The bug this guards against is not "CORS is misconfigured". CORSMiddleware returns its
 400 rather than raising, so it never reaches an exception handler and the
 unhandled-exception alerting never saw it.
 """

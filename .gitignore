@@ -4,6 +4,10 @@ __pycache__/
 dist/
 build/
 .env
+
+# private keys must never be committed — the JWT signing key lives here
+*.pem
+*.key
 .venv/
 *.sqlite3
 .ruff_cache/

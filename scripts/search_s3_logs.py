@@ -20,11 +20,18 @@ Examples:
 
     # regex, case-insensitive, stop after 50 matches
     python scripts/search_s3_logs.py -r -i -c 50 "clickpost (GET|POST)"
+
+    # download the hour files once, then search them locally (re-runs reuse the cache)
+    python scripts/search_s3_logs.py -o ./logcache -t 06 "failed to fetch"
+
+    # nginx access/error logs, which carry the Origin/Referer the app never logs
+    python scripts/search_s3_logs.py -p logs/nginx -t 06 "Disallowed"
 """
 from __future__ import annotations
 
 import argparse
 import gzip
+import os
 import re
 import sys
 from datetime import datetime, timedelta, timezone
@@ -52,6 +59,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("-i", "--ignore-case", action="store_true")
     p.add_argument("-c", "--count", type=int, help="stop after this many matching lines")
     p.add_argument("-l", "--list-only", action="store_true", help="only list the S3 files in range")
+    p.add_argument(
+        "-o",
+        "--out-dir",
+        help="download the files in range here and search on disk; already-present files are reused",
+    )
     return p.parse_args()
 
 
@@ -118,10 +130,28 @@ def main() -> None:
         print(f"-- {len(keys)} file(s) in range", file=sys.stderr)
         return
 
+    local: dict[str, str] = {}
+    if args.out_dir:
+        fetched = 0
+        for key in keys:
+            dest = os.path.join(args.out_dir, key[len(args.prefix) :].lstrip("/"))
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            if not os.path.exists(dest):  # keys are immutable, so a hit is always current
+                s3.download_file(args.bucket, key, dest)
+                fetched += 1
+            local[key] = dest
+        print(
+            f"-- {len(keys)} file(s) in {args.out_dir} ({fetched} newly downloaded)",
+            file=sys.stderr,
+        )
+
     matches = 0
     for key in keys:
-        body = s3.get_object(Bucket=args.bucket, Key=key)["Body"]
-        with gzip.GzipFile(fileobj=body) as fh:
+        if key in local:
+            fh = gzip.open(local[key], "rb")
+        else:
+            fh = gzip.GzipFile(fileobj=s3.get_object(Bucket=args.bucket, Key=key)["Body"])
+        with fh:
             for raw in fh:
                 line = raw.decode("utf-8", errors="replace").rstrip("\n")
                 if pattern.search(line):

@@ -19,10 +19,14 @@ WINDOW = timedelta(hours=24)
 # plus a handful of follow-ups.
 DEFAULT_MAX_INPUT_TOKENS = 50_000
 DEFAULT_MAX_OUTPUT_TOKENS = 3_000
+CUSTOM_MAX_INPUT_TOKENS = 1_000_000
+CUSTOM_MAX_OUTPUT_TOKENS = 100_000
 DEFAULT_EXTRA_TOKEN = 10_000
 DEFAULT_EXTRA_TOKEN_COUNT_REQUEST = 0
 MIN_RANDOM_FACTOR = 0.1
 MAX_RANDOM_FACTOR = 1.0
+
+CUSTOM_CHECK_ENTERPRISE_IDS = [983809,281989,982598,281991,982385]
 
 class UserTokenRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -46,8 +50,8 @@ class UserTokenRepository:
             id=uuid.uuid4(),
             user_id=user_id,
             enterprise_id=enterprise_id,
-            max_input_tokens=max_input_tokens,
-            max_output_tokens=max_output_tokens,
+            max_input_tokens=max_input_tokens if enterprise_id not in CUSTOM_CHECK_ENTERPRISE_IDS else CUSTOM_MAX_INPUT_TOKENS,
+            max_output_tokens=max_output_tokens if enterprise_id not in CUSTOM_CHECK_ENTERPRISE_IDS else CUSTOM_MAX_OUTPUT_TOKENS,
             window_start=now,
             reset_at=now + WINDOW,
             extra_token=extra_token,

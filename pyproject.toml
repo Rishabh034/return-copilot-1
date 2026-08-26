@@ -15,3 +15,8 @@ dependencies = [
     "python-dotenv",
     "email-validator",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# app/ is imported as a package from the repo root
+pythonpath = ["."]

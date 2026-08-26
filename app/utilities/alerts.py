@@ -1,4 +1,4 @@
-"""Slack alerting for unhandled backend exceptions.
+"""Slack alerting for backend problems that need a human.
 
 Separate from app/rr_log_analyst/memory/slack_notifier.py, which posts user
 feedback to a different channel. Synchronous (uses `requests`); call via
@@ -23,17 +23,12 @@ class SlackAlertTool(BaseModel):
 
 
 
-def alert_slack(context: str, exc: BaseException) -> None:
-    """Post a short summary of an unhandled exception to Slack. Never raises."""
+def post_alert(title: str, fields: dict[str, str]) -> None:
+    """Post a titled, field-per-line alert to the error webhook. Never raises."""
     if not settings.slack_error_webhook_url:
         return
 
-    lines = [
-        f"*Unhandled exception:* {context}",
-        f"*Type:* `{type(exc).__name__}`",
-        f"*Message:* {exc}",
-        f"*Request ID:* `{request_id_var.get()}`",
-    ]
+    lines = [f"*{title}*"] + [f"*{k}:* {v}" for k, v in fields.items()]
 
     try:
         requests.post(
@@ -42,10 +37,22 @@ def alert_slack(context: str, exc: BaseException) -> None:
             timeout=5,
         )
     except requests.RequestException:
-        logger.exception("Failed to post error alert to Slack")
+        logger.exception("Failed to post alert to Slack")
  
  
  
+def alert_slack(context: str, exc: BaseException) -> None:
+    """Post a short summary of an unhandled exception to Slack. Never raises."""
+    post_alert(
+        f"Unhandled exception: {context}",
+        {
+            "Type": f"`{type(exc).__name__}`",
+            "Message": str(exc),
+            "Request ID": f"`{request_id_var.get()}`",
+        },
+    )
+
+
 def tool_errors_slack_update(exc:SlackAlertTool) -> None:
     """Post a short summary of an unhandled exception to Slack. Never raises."""
     if not settings.slack_error_webhook_url:

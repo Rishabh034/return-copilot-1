@@ -11,6 +11,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from app.clients.clickpost import ClickpostClient
 from app.clients.observability import init_langfuse, shutdown_langfuse
 from app.config import settings
+from app.cors_alert import CorsRejectionAlertMiddleware
 from app.dependencies.auth import AgentAuthError
 from app.exceptions import AppError, app_error_handler
 from app.log_uploader import S3LogUploader
@@ -118,6 +119,8 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # after CORSMiddleware, so it wraps it and can see the rejections it returns
+    application.add_middleware(CorsRejectionAlertMiddleware)
 
     @application.get("/health", tags=["infra"])
     async def health():

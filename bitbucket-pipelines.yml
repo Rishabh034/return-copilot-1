@@ -1,0 +1,40 @@
+# Runs the test suite on every pull request, so a PR cannot be approved while
+# it is red. Deployment stays manual (build_and_deploy.sh on the server); this
+# only gates the code review.
+image: python:3.11
+
+definitions:
+  caches:
+    pip: ~/.cache/pip
+  steps:
+    - step: &tests
+        name: Unit tests
+        caches:
+          - pip
+        script:
+          - pip install --upgrade pip
+          - pip install -r requirements.txt "pytest>=7.4,<10"
+          # -p no:cacheprovider keeps the container from writing .pytest_cache
+          - python -m pytest tests/ -q -p no:cacheprovider
+    - step: &import-check
+        name: App imports cleanly
+        caches:
+          - pip
+        script:
+          - pip install -r requirements.txt
+          # catches a broken import or a syntax error anywhere in the graph
+          # before it reaches the server, where it would only show up as a
+          # container that will not boot
+          - python -c "import app.main; print('app.main imported')"
+
+pipelines:
+  pull-requests:
+    '**':
+      - parallel:
+          - step: *tests
+          - step: *import-check
+  branches:
+    master:
+      - parallel:
+          - step: *tests
+          - step: *import-check

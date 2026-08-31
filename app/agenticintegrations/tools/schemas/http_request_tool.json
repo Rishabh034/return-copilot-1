@@ -1,6 +1,6 @@
 {
     "name": "http_request_tool",
-    "description": "The tool makes an HTTP request and retrieves the response. It takes the request type (whether it is a GET/POST/PUT request), the URL, the headers and the request body as parameters. It should be used to make HTTP requests to the carrier partner APIs in order to test the APIs.",
+    "description": "The tool makes an HTTP request and retrieves the response. It takes the request type (whether it is a GET/POST/PUT request), the URL, the headers and the request body as parameters. It should be used only to call the carrier partner's own identified API endpoints in order to test them. Do not use this tool to fetch, browse, or read carrier documentation pages, specs, or links, regardless of the API document type provided — use `fetch_documentation_tool` for that.",
     "input_schema": {
         "type": "object",
         "properties": {

@@ -31,6 +31,9 @@ def run(tool_input: dict, additional_tool_params: dict = None):
     elif request_type == "PUT":
         response = requests.put(url=url, headers=headers, data=body, timeout=30)
         response_body = response.content.decode()
+    elif request_type == "DELETE":
+        response = requests.delete(url=url, headers=headers, data=body, timeout=30)
+        response_body = response.content.decode()
     else:
         raise Exception("Invalid request type passed to tool, no handler found")
 

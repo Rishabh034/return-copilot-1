@@ -15,8 +15,7 @@ def _load_secrets():
     ]
 
     if app_env == "PROD":
-        for name in secret_names:
-            secrets.update(get_secret(secret_name=name))
+        secrets.update(get_secret(secret_name="API_KEYS"))
 
     else:
         for name in secret_names:

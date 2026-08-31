@@ -34,8 +34,9 @@ class CarrierAPIScopingConsumer:
             client=ClaudeClient(
                 api_key=settings.AGENTIC_INTEGRATIONS_ANTHROPIC_API_KEY,
                 model="claude-sonnet-4-6",
-                max_tokens=4096
+                max_tokens=8192
             ),
+            tool_names=["web_search", "fetch_documentation_tool"],
             output_schema=SCOPING_OUTPUT_SCHEMA
         )
         self._jira_service = JiraService()

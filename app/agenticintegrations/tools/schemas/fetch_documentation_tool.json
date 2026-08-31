@@ -1,0 +1,14 @@
+{
+    "name": "fetch_documentation_tool",
+    "description": "Performs a plain HTTP GET on a URL and returns the raw response body exactly as received, with no summarization and no HTML-to-text conversion. Use this to read carrier documentation pages and any spec or URL referenced within them (e.g. a ReDoc `<redoc spec-url=\"...\">` tag, or a Swagger UI config) — that kind of detail can be lost by tools that convert HTML into readable text. Do not use this tool to call or test the carrier partner's own API endpoints — use `http_request_tool` for that.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "The documentation or specification URL to fetch."
+            }
+        },
+        "required": ["url"]
+    }
+}

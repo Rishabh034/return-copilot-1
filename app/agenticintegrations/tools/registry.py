@@ -14,7 +14,7 @@ import logging
 from pathlib import Path
 from typing import Any, Callable
 
-from app.agenticintegrations.tools.handlers import http_request_tool, log_api_test_tool
+from app.agenticintegrations.tools.handlers import http_request_tool, log_api_test_tool, fetch_documentation_tool
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,8 @@ SCHEMAS_DIR = Path(__file__).parent / "schemas"
 # Handler signature: (tool_input: dict) -> str | dict  (JSON-serializable result)
 TOOL_HANDLERS = {
     "http_request_tool": http_request_tool.run,
-    "log_api_test_tool": log_api_test_tool.run
+    "log_api_test_tool": log_api_test_tool.run,
+    "fetch_documentation_tool": fetch_documentation_tool.run
 }
 
 

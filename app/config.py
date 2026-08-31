@@ -85,6 +85,20 @@ class Settings(BaseSettings):
         # is flattened to a single line with literal `\n` — reverse that here.
         return v.replace("\\n", "\n") if v else v
 
+    # Enterprise spend caps. Money is integer micro-dollars throughout
+    # (1 micro = $0.000001); see app/rr_log_analyst/services/pricing.py.
+    #
+    # The reservation is a hold placed before a turn runs, since a turn's real
+    # cost is unknown until it finishes. It is admission control only and never
+    # decides what is charged - a wrong value makes a 429 arrive slightly early
+    # or slightly late, never a wrong figure in the ledger. $0.50 sits well
+    # above a typical turn (~$0.19-0.34) and well under the worst case (~$1.81).
+    budget_default_limit_micros: int = 25_000_000  # $25.00 per enterprise per month
+    budget_reservation_estimate_micros: int = 500_000  # $0.50 held per turn
+    # Off by default so deploying this feature blocks nobody. Enforcement is
+    # switched on per enterprise via enterprise_budget.enforcement_enabled.
+    budget_enforcement_default: bool = False
+
     max_context_tokens: int = 200_000
     reserved_output_tokens: int = 16384
     protected_tail_messages: int = 4

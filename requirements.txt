@@ -47,3 +47,6 @@ confluent-kafka==2.8.0
 # app/clients/llm.py, AnthropicInstrumentor (OTEL) for app/agenticintegrations/client.py
 langfuse==4.14.3
 opentelemetry-instrumentation-anthropic==0.62.1
+# Test runner. tests/ uses plain pytest with asyncio.run() inside sync tests,
+# so pytest-asyncio is deliberately not required.
+pytest==9.1.1

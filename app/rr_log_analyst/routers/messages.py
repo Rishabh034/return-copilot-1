@@ -18,13 +18,21 @@ from app.clients.observability import langfuse_identity, trace_span
 from app.exceptions import AppError, NotFoundError, BadRequestError
 from app.utilities.alerts import alert_slack
 from app.rr_log_analyst.agent import AgentRunner, build_context_note, build_system_prompt
+from app.rr_log_analyst.agent.context import merge_usage, serialize_usage
 from app.rr_log_analyst.auth import (
     resolve_internal_user_id,
     resolve_is_internal_user,
 )
 from app.rr_log_analyst.memory.store import _extract_thinking, utc_now_iso_ms
+from app.rr_log_analyst.models.budget_block_event import BudgetBlockEvent
 from app.rr_log_analyst.models.message import Message
-from app.rr_log_analyst.repositories import ConversationRepository, UserTokenRepository
+from app.rr_log_analyst.repositories import (
+    BudgetRepository,
+    BudgetState,
+    ConversationRepository,
+    UsageLedgerRepository,
+    UserTokenRepository,
+)
 from app.rr_log_analyst.repositories.message_mapper import build_partial_ai_message
 from app.rr_log_analyst.schemas.messages import SendMessageRequest
 from app.rr_log_analyst.services.title import generate_conversation_title
@@ -34,36 +42,108 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-async def _settle_user_tokens(
+async def _settle_turn(
     *,
     user_id: int,
     enterprise_id: int,
     is_internal_user: bool,
     internal_user_id: str | None,
+    conversation_id: uuid.UUID,
+    human_message_id: uuid.UUID,
     input_tokens: int,
     output_tokens: int,
-    human_message_id: uuid.UUID,
     side_input_tokens: int = 0,
+    usage: dict | None = None,
+    secondary_usage: dict | None = None,
+    budget_state: BudgetState | None = None,
 ) -> None:
-    if input_tokens <= 0 and output_tokens <= 0 and side_input_tokens <= 0:
-        return
+    """Close the books on one turn: rate-limit quota, cost ledger, spend cap.
+
+    All three in one session and one commit, because they must not disagree
+    about whether a turn happened.
+
+    Note the two different notions of "tokens used" here, which are deliberately
+    not the same number. `input_tokens` is the rate limiter's figure - the
+    largest prompt across iterations, since every iteration resends the previous
+    one's context and summing would bill it repeatedly. `usage` is the sum
+    across iterations, which is what Anthropic actually charges and therefore
+    the only correct basis for money. Using one where the other belongs
+    under-counts spend by roughly an order of magnitude.
+    """
     async with AsyncSessionLocal() as session:
-        repo = UserTokenRepository(session)
-        await session.execute(
-            update(Message)
-            .where(Message.id == human_message_id)
-            .values(token_count=input_tokens)
-        )
-        await repo.update_tokens(
-            user_id=user_id,
-            enterprise_id=enterprise_id,
-            is_internal_user=is_internal_user,
-            internal_user_id=internal_user_id,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            side_input_tokens=side_input_tokens,
-        )
+        has_token_usage = input_tokens > 0 or output_tokens > 0 or side_input_tokens > 0
+
+        if has_token_usage:
+            repo = UserTokenRepository(session)
+            await session.execute(
+                update(Message)
+                .where(Message.id == human_message_id)
+                .values(token_count=input_tokens)
+            )
+            await repo.update_tokens(
+                user_id=user_id,
+                enterprise_id=enterprise_id,
+                is_internal_user=is_internal_user,
+                internal_user_id=internal_user_id,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                side_input_tokens=side_input_tokens,
+            )
+
+        cost_micros = 0
+        if usage or secondary_usage:
+            ledger_row = await UsageLedgerRepository(session).record_turn(
+                enterprise_id=enterprise_id,
+                user_id=user_id,
+                is_internal_user=is_internal_user,
+                internal_user_id=internal_user_id,
+                conversation_id=conversation_id,
+                message_id=human_message_id,
+                model=settings.rr_analyst_model,
+                usage=usage,
+                secondary_model=settings.rr_analyst_secondary_model
+                if secondary_usage
+                else None,
+                secondary_usage=secondary_usage,
+                # Support activity is attributed to the customer for reporting
+                # but never charged against their cap.
+                counted_against_pool=not is_internal_user,
+            )
+            cost_micros = ledger_row.cost_micros
+
+        # Always settle a hold we placed, even for a turn that produced nothing
+        # - otherwise the reservation leaks until the period rolls over.
+        if budget_state is not None and budget_state.allowed:
+            await BudgetRepository(session).settle(
+                enterprise_id=enterprise_id,
+                period_start=budget_state.period_start,
+                estimate_micros=budget_state.estimate_micros,
+                actual_micros=cost_micros,
+            )
+
         await session.commit()
+
+
+async def _release_budget_hold(
+    *, enterprise_id: int, budget_state: BudgetState | None
+) -> None:
+    """Drop a hold for a turn that never reached settlement."""
+    if budget_state is None or not budget_state.allowed:
+        return
+    try:
+        async with AsyncSessionLocal() as session:
+            await BudgetRepository(session).release(
+                enterprise_id=enterprise_id,
+                period_start=budget_state.period_start,
+                estimate_micros=budget_state.estimate_micros,
+            )
+            await session.commit()
+    except Exception:
+        # Best effort: a leaked hold is recovered by the sweeper and is never
+        # worth failing a request that has already finished.
+        logger.exception(
+            "Failed to release budget hold enterprise_id=%s", enterprise_id
+        )
 
 
 def _stamp_message_time(message: BaseMessage, message_time: str | None = None) -> None:
@@ -180,15 +260,81 @@ async def send_message(
         )
         # Standard {"detail": {...}} shape; ResponseEnvelopeMiddleware lifts
         # "message" into meta.message and puts the rest under data.
+        async with AsyncSessionLocal() as session:
+            await BudgetRepository(session).record_block(
+                enterprise_id=enterprise_id,
+                user_id=user_id,
+                is_internal_user=is_internal_user,
+                limit_kind=BudgetBlockEvent.USER_TOKEN_WINDOW,
+            )
+            await session.commit()
+
+        # Standard {"detail": {...}} shape; ResponseEnvelopeMiddleware lifts
+        # "message" into meta.message and puts the rest under data.
         raise HTTPException(
             status_code=429,
             detail={
+                "code": "quota_user_window",
                 "message": "Token limit reached.",
                 "reset_at": reset_at.isoformat() if reset_at else None,
                 "can_claim_extra_tokens": can_claim_extra_tokens,
             },
             headers={"Retry-After": str(retry_after)},
         )
+
+    # Enterprise spend cap. A hold is placed before the turn runs because the
+    # real cost is not known until it finishes; it is released and replaced with
+    # the measured figure at settlement. Internal support activity is recorded
+    # against the enterprise but never charged to it, so it takes no hold.
+    #
+    # This is a no-op for any enterprise with enforcement_enabled false, which is
+    # every enterprise until someone flips the flag.
+    budget_state: BudgetState | None = None
+    if not is_internal_user:
+        async with AsyncSessionLocal() as session:
+            budget_repo = BudgetRepository(session)
+            budget_state = await budget_repo.reserve(enterprise_id=enterprise_id)
+            if not budget_state.allowed:
+                await budget_repo.record_block(
+                    enterprise_id=enterprise_id,
+                    user_id=user_id,
+                    is_internal_user=is_internal_user,
+                    limit_kind=BudgetBlockEvent.ENTERPRISE_BUDGET,
+                    state=budget_state,
+                )
+            await session.commit()
+
+        if not budget_state.allowed:
+            # Distinct from the token-window 429 above: that one clears by
+            # itself in a few hours, this one needs an admin to raise the cap or
+            # the month to end. The client cannot say the right thing to the
+            # user without being able to tell them apart.
+            retry_after = max(
+                0,
+                int(
+                    (
+                        datetime.combine(
+                            budget_state.period_end, datetime.min.time(), timezone.utc
+                        )
+                        - datetime.now(timezone.utc)
+                    ).total_seconds()
+                ),
+            )
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "budget_enterprise",
+                    "message": (
+                        "Your organisation has used its ClickHelp budget for this "
+                        "month. Ask an administrator to raise the limit."
+                    ),
+                    "limit_micros": budget_state.limit_micros,
+                    "spent_micros": budget_state.spent_micros,
+                    "remaining_micros": budget_state.remaining_micros,
+                    "period_end": budget_state.period_end.isoformat(),
+                },
+                headers={"Retry-After": str(retry_after)},
+            )
 
     clickpost_client = getattr(request.app.state, "clickpost_client", None)
     enterprise_name = body.enterprise_name if body.enterprise_name else None
@@ -248,6 +394,11 @@ async def send_message(
             completed_input_tokens = 0
             completed_side_input_tokens = 0
             completed_output_tokens = 0
+            # Cost needs the summed usage, not the rate limiter's max-across-
+            # iterations figure, so it is accumulated separately for the case
+            # where the stream dies before the `done` event carries the totals.
+            completed_usage: dict[str, int] | None = None
+            completed_secondary_usage: dict[str, int] | None = None
             usage_settled = False
 
             with trace_span(
@@ -330,6 +481,10 @@ async def send_message(
                                     completed_output_tokens += (
                                         message.usage_metadata.get("output_tokens") or 0
                                     )
+                                    completed_usage = merge_usage(
+                                        completed_usage,
+                                        serialize_usage(message.usage_metadata),
+                                    )
                             else:
                                 hidden_usage = message.additional_kwargs.get(
                                     "usage_metadata"
@@ -340,6 +495,9 @@ async def send_message(
                                     )
                                     completed_output_tokens += (
                                         hidden_usage.get("output_tokens") or 0
+                                    )
+                                    completed_secondary_usage = merge_usage(
+                                        completed_secondary_usage, hidden_usage
                                     )
                             seq += 1
                             await session.commit()
@@ -363,15 +521,19 @@ async def send_message(
                             settled_output = (usage.get("output_tokens") or 0) + (
                                 secondary_usage.get("output_tokens") or 0
                             )
-                            await _settle_user_tokens(
+                            await _settle_turn(
                                 user_id=user_id,
                                 enterprise_id=enterprise_id,
                                 is_internal_user=is_internal_user,
                                 internal_user_id=internal_user_id,
+                                conversation_id=uuid.UUID(conversation_id),
+                                human_message_id=human_row.id,
                                 input_tokens=settled_input,
                                 output_tokens=settled_output,
                                 side_input_tokens=secondary_usage.get("input_tokens") or 0,
-                                human_message_id=human_row.id,
+                                usage=usage,
+                                secondary_usage=secondary_usage,
+                                budget_state=budget_state,
                             )
                             usage_settled = True
                             thinking = (
@@ -451,23 +613,39 @@ async def send_message(
                     payload = json.dumps({"code": "internal_error", "message": user_message})
                     yield f"event: error\ndata: {payload}\n\n"
                 finally:
-                    if not usage_settled and (
-                        completed_input_tokens > 0
-                        or completed_side_input_tokens > 0
-                        or completed_output_tokens > 0
-                    ):
-                        await asyncio.shield(
-                            _settle_user_tokens(
-                                user_id=user_id,
-                                enterprise_id=enterprise_id,
-                                is_internal_user=is_internal_user,
-                                internal_user_id=internal_user_id,
-                                input_tokens=completed_input_tokens,
-                                output_tokens=completed_output_tokens,
-                                side_input_tokens=completed_side_input_tokens,
-                                human_message_id=human_row.id,
+                    # The turn ended without a `done` event - cancelled, or it
+                    # raised. Settle whatever completed so the hold is released
+                    # either way; a hold nobody releases sits on the cap until
+                    # the month rolls over.
+                    if not usage_settled:
+                        if (
+                            completed_input_tokens > 0
+                            or completed_side_input_tokens > 0
+                            or completed_output_tokens > 0
+                        ):
+                            await asyncio.shield(
+                                _settle_turn(
+                                    user_id=user_id,
+                                    enterprise_id=enterprise_id,
+                                    is_internal_user=is_internal_user,
+                                    internal_user_id=internal_user_id,
+                                    conversation_id=uuid.UUID(conversation_id),
+                                    human_message_id=human_row.id,
+                                    input_tokens=completed_input_tokens,
+                                    output_tokens=completed_output_tokens,
+                                    side_input_tokens=completed_side_input_tokens,
+                                    usage=completed_usage,
+                                    secondary_usage=completed_secondary_usage,
+                                    budget_state=budget_state,
+                                )
                             )
-                        )
+                        else:
+                            await asyncio.shield(
+                                _release_budget_hold(
+                                    enterprise_id=enterprise_id,
+                                    budget_state=budget_state,
+                                )
+                            )
 
     return StreamingResponse(
         event_stream(),

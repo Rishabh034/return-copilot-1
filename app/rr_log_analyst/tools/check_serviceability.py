@@ -174,7 +174,7 @@ async def _fetch_serviceable_accounts(
     is_rvp: bool,
 ) -> list[dict[str, Any]]:
     raw = await context.clickpost_client.check_serviceability(
-        token=context.token,
+        auth=context.auth,
         pincode=pincode,
         is_pickup_pincode=is_pickup_pincode,
         is_rvp=is_rvp,

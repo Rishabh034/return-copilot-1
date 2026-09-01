@@ -45,15 +45,19 @@ class FetchRRLogInput(BaseModel):
     start_date: str | None = Field(
         default=None,
         description=(
-            "Shipment registration start (inclusive), e.g. 2026-06-01. With end_date makes "
-            f"awb/order_id optional. Omit both for the default last-{_DEFAULT_LOOKUP_DAYS}-day window."
+            "Shipment registration start (inclusive), e.g. 2026-06-01. Pair with end_date. "
+            "awb/order_id are optional alongside a date range — a range on its own returns the "
+            f"enterprise's shipments in that window. Omit both dates for the last-"
+            f"{_DEFAULT_LOOKUP_DAYS}-day default."
         ),
     )
     end_date: str | None = Field(
         default=None,
         description=(
-            "Shipment registration end (inclusive), e.g. 2026-06-13. With start_date makes "
-            f"awb/order_id optional. Omit both for the default last-{_DEFAULT_LOOKUP_DAYS}-day window."
+            "Shipment registration end (inclusive), e.g. 2026-06-13. Pair with start_date. "
+            "awb/order_id are optional alongside a date range — a range on its own returns the "
+            f"enterprise's shipments in that window. Omit both dates for the last-"
+            f"{_DEFAULT_LOOKUP_DAYS}-day default."
         ),
     )
     page: int = Field(
@@ -68,7 +72,11 @@ class FetchRRLogInput(BaseModel):
         default=100,
         ge=1,
         le=200,
-        description="Shipments per page for AWB/order_id/date-range lookups (default 100).",
+        description=(
+            "Shipments per page for AWB/order_id/date-range lookups (default 100). Results come "
+            "back newest-registered first, so for \"my last N shipments\" set page_size=N and read "
+            "page 1 rather than fetching 100 and trimming."
+        ),
     )
 
     @model_validator(mode="after")
@@ -89,11 +97,9 @@ class FetchRRLogInput(BaseModel):
         has_shipment = bool(awb or order_id or (start and end))
 
         modes = sum(bool(x) for x in (has_ref, has_refs, has_shipment))
-        if modes == 0:
-            raise ValueError(
-                "Provide reference_number, reference_numbers, or awb/order_id "
-                "(optionally with start_date + end_date)"
-            )
+        # modes == 0 is a valid "most recent shipments" browse: no identifier and
+        # no dates falls through to the default lookup window, exactly as the
+        # start_date/end_date field descriptions promise.
         if modes > 1:
             raise ValueError(
                 "Provide only one lookup mode: reference_number, reference_numbers, "
@@ -105,10 +111,6 @@ class FetchRRLogInput(BaseModel):
             raise ValueError(
                 "Provide both start_date and end_date, or omit both for the default "
                 f"{_DEFAULT_LOOKUP_DAYS}-day window"
-            )
-        if has_shipment and not awb and not order_id and not (start and end):
-            raise ValueError(
-                "Provide awb or order_id, or a start_date + end_date range to look up by date alone"
             )
         return self
 
@@ -248,7 +250,28 @@ def _shipment_not_found_response(
     elif order_id:
         identifier = f"order_id={order_id}"
     else:
-        identifier = "the given date range"
+        # Mode 4: no identifier was given, so an empty result means the window
+        # itself holds no shipments — not that we failed to resolve something.
+        return {
+            "count": 0,
+            "shipments": [],
+            "reference_numbers": [],
+            "message": (
+                f"No shipments were registered between {start_date.isoformat()} and "
+                f"{end_date.isoformat()}."
+                + (
+                    f" That was the default last-{_DEFAULT_LOOKUP_DAYS}-day window; try an "
+                    "explicit older start_date/end_date if the shipments predate it."
+                    if used_default_date_range
+                    else ""
+                )
+            ),
+            "date_range_used": {
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "used_default": used_default_date_range,
+            },
+        }
     if used_default_date_range:
         return {
             "needs_date_range": True,
@@ -300,7 +323,7 @@ async def _resolve_reference_number(
 
     try:
         raw = await context.clickpost_client.search_shipment_details(
-            context.token,
+            auth=context.auth,
             awb_list=[awb] if awb else None,
             order_id_list=[order_id] if order_id else None,
             shipment_registration_start_date_ist=start_ist,
@@ -393,6 +416,11 @@ async def _load_rr_log_by_shipment(
         return resolved
 
     shipments = resolved.get("shipments") or []
+    if not shipments:
+        # Nothing to fan out over; return the resolver's own explanation
+        # (empty window, or a page past the last one) rather than a bare count.
+        return resolved
+
     date_range_used = resolved.get("date_range_used")
     pagination = resolved.get("pagination")
 
@@ -491,7 +519,7 @@ async def _load_rr_log(context: ToolContext, reference_number: str) -> dict[str,
         return {"error": "reference_number is required"}
 
     raw = await context.clickpost_client.get_rr_log(
-        token=context.token,
+        auth=context.auth,
         reference_number=reference_number,
     )
     return _shape_rr_log(reference_number, raw)
@@ -544,17 +572,27 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
             description=(
                 "PRIMARY — Fetch RR / allocation log(s). Each call takes exactly one lookup mode: "
                 "(1) reference_number for a known ref, "
-                "(2) reference_numbers for a batch compare (max 20), or "
+                "(2) reference_numbers for a batch compare (max 20), "
                 f"(3) awb OR order_id (optionally with start_date/end_date; defaults to last "
-                f"{_DEFAULT_LOOKUP_DAYS} days). Mode 3 resolves the shipment then fetches the RR log. "
+                f"{_DEFAULT_LOOKUP_DAYS} days), or "
+                "(4) start_date + end_date ALONE, with no identifier — returns the enterprise's "
+                "shipments registered in that window, newest first, each with its allocation log. "
+                "Mode 4 is how you answer \"my last N shipments\", \"recent orders\", \"what shipped "
+                "last week\": resolve the window from the current date yourself, set page_size=N, and "
+                "read page 1. Every argument may be omitted, which is mode 4 over the default last-"
+                f"{_DEFAULT_LOOKUP_DAYS}-day window. Modes 3 and 4 resolve the shipment(s) then fetch "
+                "the RR log. Keep mode-4 windows tight (a few days) when the allocation log matters — "
+                "log retention is short, so older shipments resolve but carry no log. "
                 "One mode per call is a per-call limit, NOT a limit on how many interpretations you "
                 "may test: when an identifier is unlabeled, issue separate parallel calls in the same "
                 "turn — one with reference_number, one with awb, one with order_id — and treat the "
                 "identifier as unresolved only if all of them come back empty. "
                 "If nothing is found in the default window, returns needs_date_range=true — ask for "
                 "dates and retry. Returns the shaped log (order, filters_ran, preference_array) for "
-                "a single ref; for AWB/order_id lookups returns "
-                "{count, date_range_used, pagination, results:[{reference_number, shipment, rr_log}]}."
+                "a single ref; for mode 3/4 lookups returns "
+                "{count, date_range_used, pagination, results:[{reference_number, shipment, rr_log}]}. "
+                "This is per-shipment listing, not aggregation — it cannot produce carrier-share or "
+                "volume totals."
             ),
             args_schema=FetchRRLogInput,
         ),

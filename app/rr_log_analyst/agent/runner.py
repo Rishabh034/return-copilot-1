@@ -15,7 +15,7 @@ from langchain_core.messages import (
 from langchain_core.tools import BaseTool
 from pydantic import ValidationError
 
-from app.clients.clickpost import ClickpostAPIError, ClickpostPermissionError
+from app.clients.clickpost import ClickpostAPIError, ClickpostAuth, ClickpostPermissionError
 from app.clients.llm import create_chat_model, create_secondary_chat_model
 from app.clients.observability import langchain_trace_config
 from app.config import settings
@@ -327,14 +327,14 @@ class AgentRunner:
         messages: list[BaseMessage],
         system_prompt: str,
         model: str,
-        token: str,
+        auth: ClickpostAuth,
         conversation_id: str,
         context_note: str | None = None,
     ) -> AsyncGenerator[tuple[str, dict[str, Any]], None]:
         """Agentic loop using ChatAnthropic.bind_tools(). Yields SSE event tuples."""
 
         tool_context = ToolContext(
-            token=token,
+            auth=auth,
             clickpost_client=self.clickpost_client,
             conversation_id=conversation_id,
         )

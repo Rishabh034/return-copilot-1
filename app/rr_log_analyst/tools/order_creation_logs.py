@@ -80,7 +80,7 @@ async def _load_order_creation_log(context: ToolContext, reference_number: str) 
         return {"error": "reference_number is required"}
 
     raw = await context.clickpost_client.get_order_creation_log(
-        token=context.token,
+        auth=context.auth,
         reference_number=reference_number,
     )
     return _shape_order_creation_log(reference_number, raw)

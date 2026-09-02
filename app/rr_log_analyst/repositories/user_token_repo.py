@@ -27,6 +27,7 @@ MIN_RANDOM_FACTOR = 0.1
 MAX_RANDOM_FACTOR = 1.0
 
 CUSTOM_CHECK_ENTERPRISE_IDS = [983809,281989,982598,281991,982385,36] # extend tokens for TMWR and USPL(36)
+INCREASE_TOKEN_LIMIT  = (datetime.now()>datetime(2026, 9, 2) and datetime.now()<datetime(2026, 9, 9)) # Token limit increase from 2nd sept to 9th sept
 
 class UserTokenRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -50,8 +51,8 @@ class UserTokenRepository:
             id=uuid.uuid4(),
             user_id=user_id,
             enterprise_id=enterprise_id,
-            max_input_tokens=max_input_tokens if enterprise_id not in CUSTOM_CHECK_ENTERPRISE_IDS else CUSTOM_MAX_INPUT_TOKENS,
-            max_output_tokens=max_output_tokens if enterprise_id not in CUSTOM_CHECK_ENTERPRISE_IDS else CUSTOM_MAX_OUTPUT_TOKENS,
+            max_input_tokens=max_input_tokens if enterprise_id not in CUSTOM_CHECK_ENTERPRISE_IDS and not INCREASE_TOKEN_LIMIT else CUSTOM_MAX_INPUT_TOKENS,
+            max_output_tokens=max_output_tokens if enterprise_id not in CUSTOM_CHECK_ENTERPRISE_IDS and not INCREASE_TOKEN_LIMIT else CUSTOM_MAX_OUTPUT_TOKENS,
             window_start=now,
             reset_at=now + WINDOW,
             extra_token=extra_token,

@@ -16,7 +16,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 revision: str = "e4f5a6b7c8d9"
-down_revision: Union[str, Sequence[str], None] = "b3c9d1e7f204"
+down_revision: Union[str, Sequence[str], None] = "c62b8d0fa473"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -55,11 +55,16 @@ def upgrade() -> None:
         sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("key_hash", name="uq_integration_api_key_hash"),
     )
-    # The auth path's only lookup: one indexed equality per request.
+    # The auth path's only lookup: one indexed equality per request. A unique
+    # index rather than an index plus a separate UNIQUE constraint, because that
+    # is what `key_hash`'s `unique=True, index=True` declares on the model — two
+    # objects here would leave the schema permanently adrift from it.
     op.create_index(
-        "ix_integration_api_key_hash", "integration_api_key", ["key_hash"]
+        "ix_integration_api_key_key_hash",
+        "integration_api_key",
+        ["key_hash"],
+        unique=True,
     )
     op.create_index("ix_integration_api_key_name", "integration_api_key", ["name"])
     # Names are unique among *active* keys only. A revoked key keeps its name so
@@ -165,5 +170,5 @@ def downgrade() -> None:
         "uq_integration_api_key_active_name", table_name="integration_api_key"
     )
     op.drop_index("ix_integration_api_key_name", table_name="integration_api_key")
-    op.drop_index("ix_integration_api_key_hash", table_name="integration_api_key")
+    op.drop_index("ix_integration_api_key_key_hash", table_name="integration_api_key")
     op.drop_table("integration_api_key")

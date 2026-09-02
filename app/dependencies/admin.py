@@ -32,7 +32,7 @@ fallback is not a lesser check - it is the stronger one - but it means a staff
 member must be listed before they can read anything. Adding `is_staff` and
 `internal_user_id` to the claims in selector/views/ai_agent_token_view.py, using
 the same validation InternalCustomAuthTokenView already performs, removes that
-requirement for viewers. Ticket F3.
+requirement for viewers.
 """
 
 from __future__ import annotations

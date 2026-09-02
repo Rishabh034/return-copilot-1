@@ -14,7 +14,7 @@ than an unsigned field on its own.
 Closing that gap properly means adding `internal_user_id` to the claims in
 clickpost's selector/views/ai_agent_token_view.py - a one-line change next to
 `user_id` - after which the guard can read it from the verified token and the
-header below becomes redundant. Tracked as F3.
+header below becomes redundant.
 
 Rows with a NULL internal_user_id keep the old behaviour: signed user_id alone,
 which is the stronger check and the right one for a genuinely distinct user.

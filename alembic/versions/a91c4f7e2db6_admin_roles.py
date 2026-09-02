@@ -2,7 +2,7 @@
 
 Two levels, because they carry very different risk.
 
-Reading cross-enterprise cost is low-risk for ClickPost staff - they can already
+Reading cross-enterprise cost is low-risk for ClickPost staff - we can already
 see customer data through the Django admin. Changing a cap, flipping enforcement
 or granting admin access is not, and should stay with a small named group.
 

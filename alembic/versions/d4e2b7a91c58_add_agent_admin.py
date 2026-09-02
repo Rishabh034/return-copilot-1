@@ -6,7 +6,7 @@ inserted by hand. That is a feature, not an oversight - a bootstrap path in
 config would be a permanent authentication bypass.
 
     INSERT INTO agent_admin (user_id, note, granted_by, created_at)
-    VALUES (14, 'subodh - platform', 14, now());
+    VALUES (14, 'subodh', 14, now());
 
 Revision ID: d4e2b7a91c58
 Revises: b3c9d1e7f204

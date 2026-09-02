@@ -93,6 +93,19 @@ class Settings(BaseSettings):
     # decides what is charged - a wrong value makes a 429 arrive slightly early
     # or slightly late, never a wrong figure in the ledger. $0.50 sits well
     # above a typical turn (~$0.19-0.34) and well under the worst case (~$1.81).
+    # Who may READ the cross-enterprise budget dashboard.
+    #
+    # False (default): an explicit agent_admin row is required, even from a
+    # verified ClickPost staff member.
+    # True: any active staff member reads it, no row needed.
+    #
+    # This exists so the decision is made here rather than inherited from
+    # another team's deploy. Clickpost marks every internal account is_staff -
+    # CSM, support, product, sales - so signing that claim would otherwise open
+    # every customer's spend to the whole company the moment it ships. Writes
+    # are unaffected: they always require a manager row.
+    budget_dashboard_open_to_all_staff: bool = False
+
     budget_default_limit_micros: int = 25_000_000  # $25.00 per enterprise per month
     budget_reservation_estimate_micros: int = 500_000  # $0.50 held per turn
     # Off by default so deploying this feature blocks nobody. Enforcement is

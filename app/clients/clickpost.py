@@ -28,6 +28,7 @@ _RECOMMENDATION_CONFIG_PATH = "/api/v1/selector-recs-flow-config"
 _RECOMMENDATION_API_PATH = "/api/v1/recommendation_api/"
 _ACTIVITY_LOG_PATH = "/dashboard/api/v1/activity-log"
 _ACTIVE_REPORTS_METADATA_PATH = "/api/v1/reports/active-reports-metadata"
+_REQUEST_USER_DETAIL_PATH = "/api/v1/request_user_detail"
 
 _LOAD_DISTRIBUTION_CONFIG_PATH = "/api/v1/selector-load-distribution-config"
 _LOAD_DISTRIBUTION_REVERSE_CONFIG_PATH = "/api/v1/selector-load-distribution-reverse-config"
@@ -79,7 +80,23 @@ class ClickpostPermissionError(Exception):
 
 
 class ClickpostAPIError(Exception):
-    """A Clickpost call failed (HTTP error, or a `meta.success=false` envelope)."""
+    """A Clickpost call failed (HTTP error, or a `meta.success=false` envelope).
+
+    `meta_status` is Clickpost's own status code from that envelope, which is
+    not an HTTP status - these endpoints answer 200 and put the real verdict in
+    the body (see utility/status_code.py in the clickpost repo; 301 is
+    INVALID_LICENSE_KEY). None when the failure was at the HTTP layer instead,
+    so a caller can tell "your credential is wrong" from "the call did not get
+    through" without matching on message text.
+    """
+
+    def __init__(self, message: str, *, meta_status: int | None = None):
+        self.meta_status = meta_status
+        super().__init__(message)
+
+
+# meta.status for an unknown or malformed license key.
+INVALID_LICENSE_KEY_STATUS = 301
 
 
 class ClickpostClient:
@@ -150,7 +167,10 @@ class ClickpostClient:
             meta = data.get("meta")
             if isinstance(meta, dict) and meta.get("success") is False:
                 message = meta.get("message") or data.get("error") or "Clickpost request failed"
-                raise ClickpostAPIError(f"Clickpost {path}: {message}")
+                raise ClickpostAPIError(
+                    f"Clickpost {path}: {message}",
+                    meta_status=meta.get("status"),
+                )
         return data
 
     async def _post(self, path: str, json_body: Any, *, auth: ClickpostAuth) -> Any:
@@ -189,7 +209,10 @@ class ClickpostClient:
                 message = (
                     meta.get("message") or data.get("error") or "Clickpost request failed"
                 )
-                raise ClickpostAPIError(f"Clickpost {path}: {message}")
+                raise ClickpostAPIError(
+                    f"Clickpost {path}: {message}",
+                    meta_status=meta.get("status"),
+                )
         return data
 
     # -- RR logs ------------------------------------------------------------
@@ -270,6 +293,24 @@ class ClickpostClient:
             auth,
             {"filters": "enterprise"},
         )
+
+    async def get_request_user_detail(self, auth: ClickpostAuth) -> dict:
+        """Resolve a credential to the enterprise it belongs to.
+
+        The one endpoint that hands back what the profile decorators otherwise
+        resolve and keep to themselves. Returns
+        `{username, user_id, enterprise_id, enterprise_name, is_sub_user,
+        business_mode}` for whichever credential is presented — including a bare
+        license key, since its view takes `inject_enterprise_user_profile_v5`
+        with no service and no permission, so there is nothing to be subscribed
+        to or permitted for.
+
+        An unknown or malformed key comes back as HTTP 200 carrying
+        meta.status 301, which `_get` raises as ClickpostAPIError with
+        `meta_status` set - so this both validates a key and names its
+        enterprise in a single ~130ms call.
+        """
+        return await self._get(_REQUEST_USER_DETAIL_PATH, auth, {})
 
     async def get_rr_config(self, auth: ClickpostAuth) -> dict:
         """Fetch the enterprise's Recommendation Flow Config.

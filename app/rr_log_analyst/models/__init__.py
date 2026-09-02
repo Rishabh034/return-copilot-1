@@ -4,6 +4,8 @@ from app.rr_log_analyst.models.budget_block_event import BudgetBlockEvent
 from app.rr_log_analyst.models.conversation import Conversation
 from app.rr_log_analyst.models.enterprise_budget import EnterpriseBudget
 from app.rr_log_analyst.models.feedback import Feedback
+from app.rr_log_analyst.models.integration_api_key import IntegrationApiKey
+from app.rr_log_analyst.models.integration_request_log import IntegrationRequestLog
 from app.rr_log_analyst.models.message import Message
 from app.rr_log_analyst.models.usage_ledger import LlmUsageLedger
 from app.rr_log_analyst.models.user_token import UserToken
@@ -15,6 +17,8 @@ __all__ = [
     "Conversation",
     "EnterpriseBudget",
     "Feedback",
+    "IntegrationApiKey",
+    "IntegrationRequestLog",
     "LlmUsageLedger",
     "Message",
     "UserToken",

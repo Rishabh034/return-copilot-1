@@ -36,6 +36,19 @@ class AuthContext:
     enterprise_id: int
     cp_token: str  # the user's clickpost DRF token, forwarded on tool calls
 
+    # Present only once clickpost signs them (see selector/views/
+    # ai_agent_token_view.py). Until then both are None here, and anything that
+    # needs to know who a ClickPost staff member is falls back to an explicit
+    # allowlist rather than trusting the unsigned request body.
+    #
+    # Worth knowing why they cannot simply be derived: internal staff obtain a
+    # Token for the *enterprise's* user via InternalCustomAuthTokenView, so by
+    # the time this JWT is minted request.user.id is the enterprise owner - id
+    # 14 for the Demo enterprise, whose is_staff is false. The staff identity is
+    # lost at that exchange and has to be re-asserted deliberately.
+    is_staff: bool = False
+    internal_user_id: str | None = None
+
 
 async def require_auth(
     authorization: str | None = Header(default=None),
@@ -82,10 +95,13 @@ async def require_auth(
         raise AgentAuthError("Invalid agent token.")
 
     try:
+        signed_internal = claims.get("internal_user_id")
         return AuthContext(
             user_id=int(claims["user_id"]),
             enterprise_id=int(claims["enterprise_id"]),
             cp_token=str(claims["cp_token"]),
+            is_staff=bool(claims.get("is_staff", False)),
+            internal_user_id=str(signed_internal) if signed_internal else None,
         )
     except (KeyError, TypeError, ValueError):
         raise AgentAuthError("Agent token is missing required claims.")

@@ -296,3 +296,63 @@ def test_ledger_prices_a_turn_and_flags_an_unknown_model():
     assert unpriced.pricing_failed is True
     assert unpriced.input_tokens == 500
     assert unpriced.counted_against_pool is False
+
+
+# --- analytics --------------------------------------------------------------
+
+def test_pressure_ranks_by_share_of_cap_not_absolute_spend():
+    """The ranking must survive Postgres integer division.
+
+    `spent / limit` on two bigints truncates to 0 for every enterprise under its
+    cap, which silently turns the ordering into whatever the planner returns.
+    Three enterprises with deliberately inverted spend-vs-ratio: the biggest
+    spender has the loosest cap and must rank last.
+    """
+    from app.rr_log_analyst.repositories.budget_analytics_repo import (
+        BudgetAnalyticsRepository,
+    )
+
+    ids = [999_300_001, 999_300_002, 999_300_003]
+
+    async def go():
+        async with AsyncSessionLocal() as s:
+            for m in (LlmUsageLedger, BudgetBlockEvent, EnterpriseBudget):
+                await s.execute(delete(m).where(m.enterprise_id.in_(ids)))
+            await s.commit()
+
+        # (enterprise, limit, spent) -> ratio
+        plan = [
+            (ids[0], 100 * DOLLAR, 10 * DOLLAR),   # 10% — spends the most
+            (ids[1], 10 * DOLLAR, 9 * DOLLAR),     # 90% — the one at risk
+            (ids[2], 10 * DOLLAR, 5 * DOLLAR),     # 50%
+        ]
+        async with AsyncSessionLocal() as s:
+            repo = BudgetRepository(s)
+            for eid, limit, spent in plan:
+                row = await repo.get_or_create(enterprise_id=eid)
+                row.limit_micros, row.spent_micros = limit, spent
+            await s.commit()
+
+        async with AsyncSessionLocal() as s:
+            rows = await BudgetAnalyticsRepository(s).pressure(limit=200)
+        ours = [r for r in rows if r["enterprise_id"] in ids]
+
+        async with AsyncSessionLocal() as s:
+            for m in (LlmUsageLedger, BudgetBlockEvent, EnterpriseBudget):
+                await s.execute(delete(m).where(m.enterprise_id.in_(ids)))
+            await s.commit()
+        return ours
+
+    ours = run(go())
+    assert [r["enterprise_id"] for r in ours] == [ids[1], ids[2], ids[0]], (
+        "must rank by consumed ratio (90%, 50%, 10%), not by absolute spend"
+    )
+    assert ours[0]["consumed_ratio"] == pytest.approx(0.9)
+
+    # Projection is date-dependent by design: run rate x days remaining. On the
+    # last day of a month elapsed == total, so it equals actual spend and nothing
+    # is "projected over". Assert the invariants instead of a fixed outcome.
+    for r in ours:
+        assert r["projected_micros"] >= r["spent_micros"], "extrapolation never shrinks"
+        assert r["projected_over"] == (r["projected_micros"] > r["limit_micros"])
+        assert 1 <= r["days_elapsed"] <= r["days_total"]

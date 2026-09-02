@@ -34,7 +34,7 @@ async def _fetch_shaped_partners(context: ToolContext) -> list[dict]:
     raw = await cached_fetch(
         context,
         ("courier_partners",),
-        lambda: context.clickpost_client.list_courier_partners(token=context.token),
+        lambda: context.clickpost_client.list_courier_partners(auth=context.auth),
     )
     return [_shape_partner(p) for p in as_list(raw)]
 

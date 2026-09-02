@@ -51,7 +51,7 @@ async def _fetch_shaped_accounts(context: ToolContext) -> list[dict]:
     raw = await cached_fetch(
         context,
         ("accounts",),
-        lambda: context.clickpost_client.list_accounts(token=context.token),
+        lambda: context.clickpost_client.list_accounts(auth=context.auth),
     )
     return [_shape_account(a) for a in as_list(raw)]
 

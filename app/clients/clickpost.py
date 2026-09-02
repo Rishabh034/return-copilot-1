@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -27,6 +28,7 @@ _RECOMMENDATION_CONFIG_PATH = "/api/v1/selector-recs-flow-config"
 _RECOMMENDATION_API_PATH = "/api/v1/recommendation_api/"
 _ACTIVITY_LOG_PATH = "/dashboard/api/v1/activity-log"
 _ACTIVE_REPORTS_METADATA_PATH = "/api/v1/reports/active-reports-metadata"
+_REQUEST_USER_DETAIL_PATH = "/api/v1/request_user_detail"
 
 _LOAD_DISTRIBUTION_CONFIG_PATH = "/api/v1/selector-load-distribution-config"
 _LOAD_DISTRIBUTION_REVERSE_CONFIG_PATH = "/api/v1/selector-load-distribution-reverse-config"
@@ -41,6 +43,33 @@ _RECOMMENDATION_SERVICE_ID = 3
 _ORDER_CREATION_SERVICE_ID = 1
 
 
+@dataclass(frozen=True)
+class ClickpostAuth:
+    """How a Clickpost call identifies itself: a dashboard token or a license key.
+
+    Clickpost's inject_enterprise_user_profile_v4/v5 decorators accept either.
+    With no Authorization header they fall back to the `key` query param and
+    look the enterprise up by its unique_id, skipping the per-user permission
+    check entirely. Integration callers only ever have a key.
+    """
+
+    token: str | None = None
+    key: str | None = None
+
+    @property
+    def headers(self) -> dict[str, str]:
+        return {"Authorization": f"Token {self.token}"} if self.token else {}
+
+    @property
+    def params(self) -> dict[str, str]:
+        return {"key": self.key} if self.key else {}
+
+    def __str__(self) -> str:
+        if self.token:
+            return f"token {self.token[:4]}...{self.token[-4:]}"
+        return f"key {self.key[:8]}..." if self.key else "anonymous"
+
+
 class ClickpostPermissionError(Exception):
     """The token authenticated but lacks the permission the endpoint requires.
 
@@ -51,7 +80,23 @@ class ClickpostPermissionError(Exception):
 
 
 class ClickpostAPIError(Exception):
-    """A Clickpost call failed (HTTP error, or a `meta.success=false` envelope)."""
+    """A Clickpost call failed (HTTP error, or a `meta.success=false` envelope).
+
+    `meta_status` is Clickpost's own status code from that envelope, which is
+    not an HTTP status - these endpoints answer 200 and put the real verdict in
+    the body (see utility/status_code.py in the clickpost repo; 301 is
+    INVALID_LICENSE_KEY). None when the failure was at the HTTP layer instead,
+    so a caller can tell "your credential is wrong" from "the call did not get
+    through" without matching on message text.
+    """
+
+    def __init__(self, message: str, *, meta_status: int | None = None):
+        self.meta_status = meta_status
+        super().__init__(message)
+
+
+# meta.status for an unknown or malformed license key.
+INVALID_LICENSE_KEY_STATUS = 301
 
 
 class ClickpostClient:
@@ -60,10 +105,11 @@ class ClickpostClient:
     These are existing production endpoints (request logs, selector filter config,
     courier accounts) on a single host (`base_url`), reused as-is.
 
-    Authentication/scoping is per-request: every method takes a `token` that the
-    caller obtained from the dashboard. It is forwarded verbatim as the
-    `Authorization: Token <token>` header, which both authenticates the call and
-    scopes it to the right enterprise. The client only performs reads.
+    Authentication/scoping is per-request: every method takes a `ClickpostAuth`
+    holding either a dashboard token (sent as `Authorization: Token <token>`) or
+    an enterprise license key (sent as `?key=<uuid>`). Either one both
+    authenticates the call and scopes it to the right enterprise. The client only
+    performs reads.
     """
 
     def __init__(
@@ -82,16 +128,17 @@ class ClickpostClient:
 
     # -- internal helpers ---------------------------------------------------
 
-    async def _get(self, path: str, token: str, params: dict[str, Any]) -> Any:
+    async def _get(self, path: str, auth: ClickpostAuth, params: dict[str, Any]) -> Any:
         url = f"{self._base_url}{path}"
         # Drop None-valued params so we don't send empty query keys.
         clean = {k: v for k, v in params.items() if v is not None}
+        clean.update(auth.params)
         logger.debug("Clickpost GET %s params=%s", url, clean)
-        # The token authenticates + scopes the request; forward it as-is.
+        # The credential authenticates + scopes the request; forward it as-is.
         resp = await self._client.get(
             url,
             params=clean,
-            headers={"Authorization": f"Token {token}"} if token else None,
+            headers=auth.headers or None,
         )
 
         # The enterprise-profile decorator returns a real 401/403 when the
@@ -100,9 +147,9 @@ class ClickpostClient:
         # treating it as a generic failure.
         if resp.status_code in (401, 403):
             raise ClickpostPermissionError(
-                f"Token lacks permission for {path} (HTTP {resp.status_code}). "
-                "This endpoint requires a dashboard permission the current token "
-                "does not have."
+                f"Credential lacks permission for {path} (HTTP {resp.status_code}). "
+                "This endpoint requires a dashboard permission the current "
+                "credential does not have."
             )
         try:
             resp.raise_for_status()
@@ -110,9 +157,9 @@ class ClickpostClient:
             raise ClickpostAPIError(f"Clickpost {path} failed: HTTP {resp.status_code}") from e
 
         data = resp.json()
-        logger.info("Clickpost response for %s: token=%s...%s status=%s meta=%s",
-                    path, token[:4] if token else "N/A", token[-4:] if token else "N/A",
-                    resp.status_code, data.get("meta") if isinstance(data, dict) else "non-dict")
+        logger.info("Clickpost response for %s: auth=%s status=%s meta=%s",
+                    path, auth, resp.status_code,
+                    data.get("meta") if isinstance(data, dict) else "non-dict")
         # These endpoints wrap responses in {"meta": {...success...}, "result": ...}
         # and return HTTP 200 even for app-level errors (e.g. unknown reference).
         # Surface that envelope failure as an error rather than silently empty data.
@@ -120,33 +167,21 @@ class ClickpostClient:
             meta = data.get("meta")
             if isinstance(meta, dict) and meta.get("success") is False:
                 message = meta.get("message") or data.get("error") or "Clickpost request failed"
-                raise ClickpostAPIError(f"Clickpost {path}: {message}")
+                raise ClickpostAPIError(
+                    f"Clickpost {path}: {message}",
+                    meta_status=meta.get("status"),
+                )
         return data
 
-    async def _post(
-        self,
-        path: str,
-        json_body: Any,
-        *,
-        key: str | None = None,
-        token: str | None = None,
-    ) -> Any:
-        """POST variant of _get. Supports both key-based (query param) and
-        token-based (header) auth — pass whichever the endpoint requires."""
+    async def _post(self, path: str, json_body: Any, *, auth: ClickpostAuth) -> Any:
+        """POST variant of _get."""
         url = f"{self._base_url}{path}"
-        params: dict[str, str] = {}
-        headers: dict[str, str] = {}
-        if key:
-            params["key"] = key
-        if token:
-            headers["Authorization"] = f"Token {token}"
-
         logger.debug("Clickpost POST %s", url)
         resp = await self._client.post(
             url,
             json=json_body,
-            params=params,
-            headers=headers or None,
+            params=auth.params,
+            headers=auth.headers or None,
         )
 
         if resp.status_code in (401, 403):
@@ -174,14 +209,17 @@ class ClickpostClient:
                 message = (
                     meta.get("message") or data.get("error") or "Clickpost request failed"
                 )
-                raise ClickpostAPIError(f"Clickpost {path}: {message}")
+                raise ClickpostAPIError(
+                    f"Clickpost {path}: {message}",
+                    meta_status=meta.get("status"),
+                )
         return data
 
     # -- RR logs ------------------------------------------------------------
 
     async def search_shipment_details(
         self,
-        token: str,
+        auth: ClickpostAuth,
         *,
         awb_list: list[str] | None = None,
         order_id_list: list[str] | None = None,
@@ -210,10 +248,10 @@ class ClickpostClient:
         return await self._post(
             _TRACK_ORDER_SHIPMENT_DETAILS_PATH,
             json_body=body,
-            token=token,
+            auth=auth,
         )
 
-    async def get_rr_log(self, token: str, reference_number: str) -> dict:
+    async def get_rr_log(self, auth: ClickpostAuth, reference_number: str) -> dict:
         """Fetch the recommendation/allocation log for a single shipment.
 
         Reuses the request_logs endpoint for the Recommendation service; it
@@ -222,14 +260,14 @@ class ClickpostClient:
         """
         return await self._get(
             _RR_LOG_PATH,
-            token,
+            auth,
             {
                 "service_id": _RECOMMENDATION_SERVICE_ID,
                 "reference_number": reference_number,
             },
         )
 
-    async def get_order_creation_log(self, token: str, reference_number: str) -> dict:
+    async def get_order_creation_log(self, auth: ClickpostAuth, reference_number: str) -> dict:
         """Fetch the recommendation/allocation log for a single shipment.
 
         Reuses the request_logs endpoint for the Recommendation service; it
@@ -238,25 +276,43 @@ class ClickpostClient:
         """
         return await self._get(
             _RR_LOG_PATH,
-            token,
+            auth,
             {
                 "service_id": _ORDER_CREATION_SERVICE_ID,
                 "reference_number": reference_number,
             },
         )
 
-    async def get_enterprise_metadata(self, token: str) -> dict:
+    async def get_enterprise_metadata(self, auth: ClickpostAuth) -> dict:
         """List enterprises (id + name) from active-reports-metadata.
 
         Reuses GET /api/v1/reports/active-reports-metadata?filters=enterprise.
         """
         return await self._get(
             _ACTIVE_REPORTS_METADATA_PATH,
-            token,
+            auth,
             {"filters": "enterprise"},
         )
 
-    async def get_rr_config(self, token: str) -> dict:
+    async def get_request_user_detail(self, auth: ClickpostAuth) -> dict:
+        """Resolve a credential to the enterprise it belongs to.
+
+        The one endpoint that hands back what the profile decorators otherwise
+        resolve and keep to themselves. Returns
+        `{username, user_id, enterprise_id, enterprise_name, is_sub_user,
+        business_mode}` for whichever credential is presented — including a bare
+        license key, since its view takes `inject_enterprise_user_profile_v5`
+        with no service and no permission, so there is nothing to be subscribed
+        to or permitted for.
+
+        An unknown or malformed key comes back as HTTP 200 carrying
+        meta.status 301, which `_get` raises as ClickpostAPIError with
+        `meta_status` set - so this both validates a key and names its
+        enterprise in a single ~130ms call.
+        """
+        return await self._get(_REQUEST_USER_DETAIL_PATH, auth, {})
+
+    async def get_rr_config(self, auth: ClickpostAuth) -> dict:
         """Fetch the enterprise's Recommendation Flow Config.
 
         Returns EnterpriseRecommendationFlowConfig — boolean toggles for which
@@ -265,20 +321,20 @@ class ClickpostClient:
         """
         return await self._get(
             _RECOMMENDATION_CONFIG_PATH,
-            token,
+            auth,
             {},
         )
     # -- rules --------------------------------------------------------------
 
-    async def list_rules(self, token: str, rule_type: str) -> Any:
+    async def list_rules(self, auth: ClickpostAuth, rule_type: str) -> Any:
         """List all rules of a given type ("FILTER" or "ORDERED_LIST")."""
         return await self._get(
             _RULES_CONFIG_PATH,
-            token,
+            auth,
             {"rule_type": rule_type},
         )
 
-    async def get_rule(self, token: str, rule_id: str) -> Any:
+    async def get_rule(self, auth: ClickpostAuth, rule_id: str) -> Any:
         """Fetch all rules for the enterprise (caller filters by id).
 
         The selector-filters-config endpoint filters by `rule_type` only, not by
@@ -287,57 +343,57 @@ class ClickpostClient:
         """
         return await self._get(
             _RULES_CONFIG_PATH,
-            token,
+            auth,
             {},
         )
 
     # -- accounts -----------------------------------------------------------
 
-    async def list_accounts(self, token: str) -> Any:
+    async def list_accounts(self, auth: ClickpostAuth) -> Any:
         """List all carrier accounts configured for the enterprise."""
         return await self._get(
             _ACCOUNTS_PATH,
-            token,
+            auth,
             {},
         )
 
-    async def list_courier_partners(self, token: str) -> Any:
+    async def list_courier_partners(self, auth: ClickpostAuth) -> Any:
         """List all courier partners (global CP catalog with name, cpId, country, type)."""
-        return await self._get(_COURIER_PARTNERS_PATH, token, {})
+        return await self._get(_COURIER_PARTNERS_PATH, auth, {})
 
     # -- load distribution --------------------------------------------------
 
-    async def get_load_distribution_config(self, token: str) -> Any:
+    async def get_load_distribution_config(self, auth: ClickpostAuth) -> Any:
         """Fetch forward load distribution config (account-level % and daily caps)."""
-        return await self._get(_LOAD_DISTRIBUTION_CONFIG_PATH, token, {})
+        return await self._get(_LOAD_DISTRIBUTION_CONFIG_PATH, auth, {})
 
-    async def get_load_distribution_reverse_config(self, token: str) -> Any:
+    async def get_load_distribution_reverse_config(self, auth: ClickpostAuth) -> Any:
         """Fetch reverse (RVP) load distribution config."""
-        return await self._get(_LOAD_DISTRIBUTION_REVERSE_CONFIG_PATH, token, {})
+        return await self._get(_LOAD_DISTRIBUTION_REVERSE_CONFIG_PATH, auth, {})
 
-    async def get_load_distribution_filter_config(self, token: str, filter_id: int) -> Any:
+    async def get_load_distribution_filter_config(self, auth: ClickpostAuth, filter_id: int) -> Any:
         """Fetch per-filter (lane-level) load distribution config for a Filter rule."""
         return await self._get(
             _LOAD_DISTRIBUTION_FILTER_CONFIG_PATH,
-            token,
+            auth,
             {"filter_id": filter_id},
         )
 
     # -- recommendation engine ----------------------------------------------
 
-    async def run_recommendation(self, token: str, orders: list[dict]) -> Any:
+    async def run_recommendation(self, auth: ClickpostAuth, orders: list[dict]) -> Any:
         """Run the recommendation engine for one or more orders."""
         return await self._post(
             _RECOMMENDATION_API_PATH,
             json_body=orders,
-            token=token,
+            auth=auth,
         )
 
     # -- activity / audit logs ----------------------------------------------
 
     async def get_audit_logs(
         self,
-        token: str,
+        auth: ClickpostAuth,
         start_date: str,
         end_date: str,
         action_taken: str,
@@ -353,8 +409,9 @@ class ClickpostClient:
             "page_size": page_size,
             "page": page,
         }
+        params.update(auth.params)
         logger.debug("Clickpost GET %s params=%s", url, params)
-        resp = await self._client.get(url, params=params, headers={"Authorization": f"Token {token}"})
+        resp = await self._client.get(url, params=params, headers=auth.headers or None)
 
         if resp.status_code in (401, 403):
             raise ClickpostPermissionError(
@@ -387,7 +444,7 @@ class ClickpostClient:
 
     # -- serviceability ------------------------------------------------------
     
-    async def check_serviceability(self, token: str, pincode: str, is_pickup_pincode: bool, is_rvp: bool) -> Any:
+    async def check_serviceability(self, auth: ClickpostAuth, pincode: str, is_pickup_pincode: bool, is_rvp: bool) -> Any:
         """Check serviceability for a given pincode."""
         
         params = {
@@ -398,17 +455,17 @@ class ClickpostClient:
         
         return await self._get(
             _CHECK_SERVICEABILITY_PATH,
-            token,
+            auth,
             params,
         )
         
         
     # -- Attribute Layer / carrier exception rules --------------------------
 
-    async def get_carrier_exception_rules(self, token: str) -> Any:
+    async def get_carrier_exception_rules(self, auth: ClickpostAuth) -> Any:
         """List Attribute Layer (carrier exception / attribute-rules) configs for the enterprise."""
         return await self._get(
             _CARRIER_EXCEPTION,
-            token,
+            auth,
             {},
         )

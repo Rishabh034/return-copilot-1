@@ -132,7 +132,7 @@ def _derive_flow_summary(config: dict) -> str:
 
 
 async def _fetch_flow_config(context: ToolContext) -> dict[str, Any]:
-    raw = await context.clickpost_client.get_rr_config(token=context.token)
+    raw = await context.clickpost_client.get_rr_config(auth=context.auth)
     config = _unwrap_result(raw)
     if not config:
         return {"error": "Unexpected flow-config response shape", "raw": raw}

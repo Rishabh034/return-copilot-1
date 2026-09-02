@@ -116,7 +116,7 @@ class RecommendationCourierSearchInput(BaseModel):
 async def _run_recommendation_raw(context: ToolContext, order: OrderInput) -> dict[str, Any]:
     order_dict = order.model_dump(exclude_none=True)
     raw = await context.clickpost_client.run_recommendation(
-        token=context.token,
+        auth=context.auth,
         orders=[order_dict],
     )
     if not isinstance(raw, dict):

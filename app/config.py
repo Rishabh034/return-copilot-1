@@ -112,6 +112,20 @@ class Settings(BaseSettings):
     # switched on per enterprise via enterprise_budget.enforcement_enabled.
     budget_enforcement_default: bool = False
 
+    # Integration API keys (/integrations/query). These callers are internal
+    # ClickPost services, billed per key rather than per enterprise, so none of
+    # the settings above apply to them.
+    #
+    # A key is created with no cap and stays uncapped until someone sets
+    # integration_api_key.monthly_limit_micros, so the hold below is inert on
+    # day one. It is still taken, because taking it only once a cap exists would
+    # leave the first capped month running on an untested path.
+    integration_reservation_estimate_micros: int = 500_000  # $0.50 held per request
+    # Cheap Clickpost round trip that rejects a bad license key before it costs
+    # a model run; see services/license_key_check.py for why it fails open.
+    integration_preflight_enabled: bool = True
+    integration_license_key_ttl_seconds: int = 300
+
     max_context_tokens: int = 200_000
     reserved_output_tokens: int = 16384
     protected_tail_messages: int = 4

@@ -13,6 +13,7 @@ from sqlalchemy import update
 
 from datetime import datetime
 from app.db import AsyncSessionLocal
+from app.clients.clickpost import ClickpostAuth
 from app.dependencies.auth import resolve_identity
 from app.clients.observability import langfuse_identity, trace_span
 from app.exceptions import AppError, NotFoundError, BadRequestError
@@ -461,7 +462,7 @@ async def send_message(
                         system_prompt=system_prompt,
                         context_note=context_note,
                         model=settings.rr_analyst_model,
-                        token=token,
+                        auth=ClickpostAuth(token=token),
                         conversation_id=conversation_id,
                     ):
                         if event_type == "message_complete":

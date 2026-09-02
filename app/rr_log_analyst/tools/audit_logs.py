@@ -247,7 +247,7 @@ async def _fetch_all_audit_log_pages(
 
     while True:
         raw = await context.clickpost_client.get_audit_logs(
-            token=context.token,
+            auth=context.auth,
             start_date=start_date,
             end_date=end_date,
             action_taken=action_taken,

@@ -40,7 +40,7 @@ async def _fetch_rules_by_type(context: ToolContext, rule_type: str) -> list[dic
         await cached_fetch(
             context,
             ("rules_by_type", rule_type),
-            lambda: context.clickpost_client.list_rules(token=context.token, rule_type=rule_type),
+            lambda: context.clickpost_client.list_rules(auth=context.auth, rule_type=rule_type),
         )
     )
 
@@ -139,7 +139,7 @@ async def _fetch_all_raw_rules(context: ToolContext) -> list[dict]:
         await cached_fetch(
             context,
             ("rules_all",),
-            lambda: context.clickpost_client.get_rule(token=context.token, rule_id=""),
+            lambda: context.clickpost_client.get_rule(auth=context.auth, rule_id=""),
         )
     )
 

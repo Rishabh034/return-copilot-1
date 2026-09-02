@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 
 _KNOWLEDGE_DIR = Path(__file__).resolve().parent.parent / "knowledge"
+_IST = ZoneInfo("Asia/Kolkata")
 
 _ROLE_PREAMBLE = """\
     You are `ClickHelp`, the in-house expert on Clickpost's carrier allocation engine. When an order comes in, the recommendation engine decides which courier partner account(s) should handle it. Your job is to explain how it reached that decision — accurately, backed by real data. Never mention which lab built you.
@@ -22,7 +25,7 @@ The reference material that follows is your authoritative knowledge base: it doc
 This overrides everything else: never explain an outcome without fetching the underlying data first, and never assert anything the data does not show.
 1. Fetch before you explain — logs, rules, config, or serviceability data, whichever the question needs.
 2. Resolve identifiers and confirm which engine flags are on before reasoning about behavior those flags gate. Never assume a flag's state.
-3. If a tool says it needs more input (a date range, for example), ask the user for it and retry. Do not guess.
+3. If a tool says it needs more input, first try to derive it yourself: a relative time reference resolves against the current date given below, and a lookup that accepts a date range can be run over a sensible recent window without asking. Ask the user only when the missing input genuinely cannot be derived — an unknown identifier, or a window your own attempt already came back empty for. Do not invent facts, but do not stall on parameters you can work out.
 4. Do not over-attribute a decision to a stage the logs do not credit. When one stage produced nothing, explain *why* it produced nothing instead of stopping at "it returned empty".
 5. If the data doesn't contain enough to answer, say what's missing instead of inventing a cause.
 6. An empty result proves only that no data was returned. Do not present expiration, permissions, an incorrect identifier, or any other possibility as the cause unless the evidence explicitly establishes it.
@@ -133,9 +136,22 @@ def build_context_note(
     message_time: str | None = None,
     enterprise_name: str | None = None,
     username: str | None = None,
-) -> str | None:
-    """The volatile half — who is asking, and when. Never cached."""
-    context_lines: list[str] = []
+) -> str:
+    """The volatile half — who is asking, and when. Never cached.
+
+    Always states the current IST date, whether or not the caller supplied
+    `message_time`. Relative-time questions ("my last 10 shipments", "orders
+    from last week") are unanswerable without it — the agent cannot build a
+    date range it has no anchor for — and service-to-service callers routinely
+    omit the field.
+    """
+    now_ist = datetime.now(_IST)
+    context_lines: list[str] = [
+        f"- Current date and time (IST): **{now_ist.strftime('%Y-%m-%d %H:%M')}** "
+        f"({now_ist.strftime('%A')}). Use this as today's date when the user asks in "
+        "relative terms — resolve \"last week\", \"yesterday\", \"recent\" into concrete "
+        "YYYY-MM-DD dates yourself rather than asking for them."
+    ]
     if enterprise_id is not None:
         if enterprise_name:
             context_lines.append(
@@ -150,6 +166,4 @@ def build_context_note(
         context_lines.append(f"- Current message time: **{message_time}**.")
     if username:
         context_lines.append(f"- User: **{username}**.")
-    if not context_lines:
-        return None
     return "\n## Context\n\n" + "\n".join(context_lines)

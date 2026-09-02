@@ -93,7 +93,7 @@ async def _fetch_accounts(context: ToolContext) -> dict[int, dict]:
     raw = await cached_fetch(
         context,
         ("accounts",),
-        lambda: context.clickpost_client.list_accounts(token=context.token),
+        lambda: context.clickpost_client.list_accounts(auth=context.auth),
     )
     return _account_lookup(as_list(raw))
 
@@ -105,7 +105,7 @@ async def _get_load_distribution_config(
     raw = await cached_fetch(
         context,
         ("ld_config", "forward"),
-        lambda: context.clickpost_client.get_load_distribution_config(token=context.token),
+        lambda: context.clickpost_client.get_load_distribution_config(auth=context.auth),
     )
     lookup = await _fetch_accounts(context)
     entries = [_shape_forward_entry(e, lookup) for e in as_list(raw)]
@@ -139,7 +139,7 @@ async def _get_load_distribution_reverse_config(
     raw = await cached_fetch(
         context,
         ("ld_config", "reverse"),
-        lambda: context.clickpost_client.get_load_distribution_reverse_config(token=context.token),
+        lambda: context.clickpost_client.get_load_distribution_reverse_config(auth=context.auth),
     )
     lookup = await _fetch_accounts(context)
     entries = [_shape_forward_entry(e, lookup) for e in as_list(raw)]
@@ -175,7 +175,7 @@ async def _get_load_distribution_filter_config(
         context,
         ("ld_config", "filter", filter_id),
         lambda: context.clickpost_client.get_load_distribution_filter_config(
-            token=context.token,
+            auth=context.auth,
             filter_id=filter_id,
         ),
     )

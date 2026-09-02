@@ -148,7 +148,7 @@ def _resolve_rules_by_query(
 
 
 async def _fetch_carrier_exception_rules(context: ToolContext) -> list[dict]:
-    raw = await context.clickpost_client.get_carrier_exception_rules(token=context.token)
+    raw = await context.clickpost_client.get_carrier_exception_rules(auth=context.auth)
     return as_list(raw)
 
 

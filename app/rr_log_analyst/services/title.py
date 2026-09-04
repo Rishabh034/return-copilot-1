@@ -36,15 +36,23 @@ async def generate_conversation_title(
     *,
     user_message: str | list,
     conversation_id: str | None = None,
-) -> str | None:
+) -> tuple[str | None, dict | None]:
     """Make a small Haiku call to title a conversation from its first exchange.
 
-    Best-effort: returns None on any failure so the caller can carry on without
-    a title rather than surface an error.
+    Returns `(title, usage)`. The usage half exists because this is a real,
+    billed Anthropic call: it used to be discarded here, which left every
+    titling call charged by Anthropic and traced by Langfuse but absent from
+    `llm_usage_ledger`, so it counted against nobody's cap and showed up as a
+    permanent unexplained gap in any reconciliation.
+
+    Best-effort: returns `(None, usage)` on any failure so the caller can carry
+    on without a title rather than surface an error. Note the usage is still
+    returned when the title itself is unusable - the tokens were spent whether
+    or not we could use the answer.
     """
     user_text = _coerce_text(user_message).strip()
     if not user_text:
-        return None
+        return None, None
 
     prompt = (
         "Title this conversation based on its opening exchange.\n\n"
@@ -60,10 +68,13 @@ async def generate_conversation_title(
             ],
             config=langchain_trace_config(conversation_id),
         )
+        usage = getattr(response, "usage_metadata", None) or None
         title = _coerce_text(response.content).strip().strip('"').strip()
         if not title:
-            return None
-        return title[:_MAX_TITLE_CHARS]
+            return None, usage
+        return title[:_MAX_TITLE_CHARS], usage
     except Exception:
+        # The call may have been billed before it failed, but no usage is
+        # recoverable from an exception, so this path under-counts by design.
         logger.exception("Failed to generate conversation title")
-        return None
+        return None, None

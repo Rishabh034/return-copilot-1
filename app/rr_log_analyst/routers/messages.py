@@ -14,16 +14,13 @@ from sqlalchemy import update
 from datetime import datetime
 from app.db import AsyncSessionLocal
 from app.clients.clickpost import ClickpostAuth
-from app.dependencies.auth import resolve_identity
+from app.dependencies.auth import AuthContext, resolve_identity_context
 from app.clients.observability import langfuse_identity, trace_span
 from app.exceptions import AppError, NotFoundError, BadRequestError
 from app.utilities.alerts import alert_slack
 from app.rr_log_analyst.agent import AgentRunner, build_context_note, build_system_prompt
 from app.rr_log_analyst.agent.context import merge_usage, serialize_usage
-from app.rr_log_analyst.auth import (
-    resolve_internal_user_id,
-    resolve_is_internal_user,
-)
+from app.rr_log_analyst.auth import resolve_internal_actor
 from app.rr_log_analyst.memory.store import _extract_thinking, utc_now_iso_ms
 from app.rr_log_analyst.models.budget_block_event import BudgetBlockEvent
 from app.rr_log_analyst.models.message import Message
@@ -203,12 +200,17 @@ async def _persist_partial(
 async def _resolve_identity(
     body: SendMessageRequest,
     authorization: str | None = Header(default=None),
-) -> tuple[int, int, str]:
-    return await resolve_identity(
+) -> tuple[int, int, str, AuthContext | None]:
+    """Identity plus the verified claims, which this router needs for billing.
+
+    Whether a turn counts against the enterprise pool is decided from the
+    claims where clickpost signs them, so the context has to survive as far as
+    `resolve_internal_actor` rather than being dropped here.
+    """
+    return await resolve_identity_context(
         user_id=body.user_id,
         enterprise_id=body.enterprise_id,
         authorization=authorization,
-    
     )
 
 
@@ -216,17 +218,16 @@ async def _resolve_identity(
 async def send_message(
     body: SendMessageRequest,
     request: Request,
-    identity: tuple[int, int, str] = Depends(_resolve_identity),
+    identity: tuple[int, int, str, AuthContext | None] = Depends(_resolve_identity),
 ):
-    user_id, enterprise_id, token = identity
-    is_internal_user = resolve_is_internal_user(body.is_internal_user)
-    internal_user_id = resolve_internal_user_id(body.internal_user_id)
-
-    if not is_internal_user:
-        internal_user_id = None
-
-    if is_internal_user and internal_user_id is None:
-        raise BadRequestError("Internal user ID is required")
+    user_id, enterprise_id, token, auth_ctx = identity
+    # Signed claims win over the body here — this flag decides whether the turn
+    # is billed to the enterprise's pool. See resolve_internal_actor.
+    is_internal_user, internal_user_id = resolve_internal_actor(
+        ctx=auth_ctx,
+        body_is_internal_user=body.is_internal_user,
+        body_internal_user_id=body.internal_user_id,
+    )
 
     async with AsyncSessionLocal() as session:
         token_repo = UserTokenRepository(session)
@@ -400,6 +401,9 @@ async def send_message(
             # where the stream dies before the `done` event carries the totals.
             completed_usage: dict[str, int] | None = None
             completed_secondary_usage: dict[str, int] | None = None
+            # Set only on a conversation's first turn; merged into whichever
+            # settle path runs so neither can drop it.
+            title_usage: dict[str, int] | None = None
             usage_settled = False
 
             with trace_span(
@@ -444,7 +448,11 @@ async def send_message(
                     await session.commit()
 
                     if is_new_conversation:
-                        title = await generate_conversation_title(
+                        # Titling is a billed Haiku call. Its usage is carried to
+                        # settlement below so it lands in the ledger like any other
+                        # spend, rather than being charged by Anthropic and recorded
+                        # nowhere.
+                        title, title_usage = await generate_conversation_title(
                             user_message=human_message.content,
                             conversation_id=conversation_id,
                         )
@@ -531,9 +539,13 @@ async def send_message(
                                 human_message_id=human_row.id,
                                 input_tokens=settled_input,
                                 output_tokens=settled_output,
+                                # Rate limiter deliberately excludes the titling
+                                # call: it is spend, but it is not something the
+                                # user asked for, and charging it to their 24h
+                                # window would shorten every new conversation.
                                 side_input_tokens=secondary_usage.get("input_tokens") or 0,
                                 usage=usage,
-                                secondary_usage=secondary_usage,
+                                secondary_usage=merge_usage(secondary_usage, title_usage),
                                 budget_state=budget_state,
                             )
                             usage_settled = True
@@ -570,10 +582,13 @@ async def send_message(
 
                         yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
-                    # First exchange on a fresh conversation — title it from the
-                    # opening user/assistant turn with a small Haiku call. Runs after
-                    # the answer has fully streamed, so it never delays the response;
-                    # best-effort, so a failure leaves the conversation untitled.
+                    # NOTE: titling used to run here, after the stream, which is
+                    # what "never delays the response" meant. It now runs *before*
+                    # the stream (see is_new_conversation above), so a new
+                    # conversation waits a full Haiku round-trip before its first
+                    # token. Moving it back would take it past settlement, so its
+                    # usage would need its own ledger row rather than joining the
+                    # turn's - see docs/budget-tasks.md G8.
 
                 except asyncio.CancelledError:
                     # Client stopped / disconnected mid-stream. Persist whatever
@@ -636,7 +651,9 @@ async def send_message(
                                     output_tokens=completed_output_tokens,
                                     side_input_tokens=completed_side_input_tokens,
                                     usage=completed_usage,
-                                    secondary_usage=completed_secondary_usage,
+                                    secondary_usage=merge_usage(
+                                        completed_secondary_usage, title_usage
+                                    ),
                                     budget_state=budget_state,
                                 )
                             )

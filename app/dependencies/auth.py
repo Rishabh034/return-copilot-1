@@ -55,6 +55,16 @@ class AuthContext:
     # would silently ignore a signed `false` and keep trusting the client.
     is_internal_user: bool | None = None
 
+    # Deliberately NOT tri-state, unlike is_internal_user above. This one grants
+    # sight of every colleague's spend, so an absent claim must deny rather than
+    # fall back to anything — a token minted before clickpost signs it simply is
+    # not an admin token.
+    is_enterprise_admin: bool = False
+
+    # Seats to divide the pool by, for track E. None until clickpost sends it;
+    # counting our own tables would miss everyone who has not yet sent a message.
+    seat_count: int | None = None
+
 
 async def require_auth(
     authorization: str | None = Header(default=None),
@@ -103,6 +113,7 @@ async def require_auth(
     try:
         signed_internal = claims.get("internal_user_id")
         signed_is_internal = claims.get("is_internal_user")
+        signed_seats = claims.get("seat_count")
         return AuthContext(
             user_id=int(claims["user_id"]),
             enterprise_id=int(claims["enterprise_id"]),
@@ -112,6 +123,8 @@ async def require_auth(
             is_internal_user=(
                 bool(signed_is_internal) if signed_is_internal is not None else None
             ),
+            is_enterprise_admin=bool(claims.get("is_enterprise_admin", False)),
+            seat_count=int(signed_seats) if signed_seats is not None else None,
         )
     except (KeyError, TypeError, ValueError):
         raise AgentAuthError("Agent token is missing required claims.")

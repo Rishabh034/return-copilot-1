@@ -49,6 +49,12 @@ class AuthContext:
     is_staff: bool = False
     internal_user_id: str | None = None
 
+    # Tri-state on purpose. None means clickpost did not sign the claim, which
+    # is not the same as signing it false: the first has to fall back to the
+    # request body, the second must override it. Collapsing them to a bool
+    # would silently ignore a signed `false` and keep trusting the client.
+    is_internal_user: bool | None = None
+
 
 async def require_auth(
     authorization: str | None = Header(default=None),
@@ -96,12 +102,16 @@ async def require_auth(
 
     try:
         signed_internal = claims.get("internal_user_id")
+        signed_is_internal = claims.get("is_internal_user")
         return AuthContext(
             user_id=int(claims["user_id"]),
             enterprise_id=int(claims["enterprise_id"]),
             cp_token=str(claims["cp_token"]),
             is_staff=bool(claims.get("is_staff", False)),
             internal_user_id=str(signed_internal) if signed_internal else None,
+            is_internal_user=(
+                bool(signed_is_internal) if signed_is_internal is not None else None
+            ),
         )
     except (KeyError, TypeError, ValueError):
         raise AgentAuthError("Agent token is missing required claims.")
@@ -121,12 +131,35 @@ async def resolve_identity(
     - True:  identity comes from a verified clickpost-minted JWT
     - False: legacy body/query values, for local testing
     """
+    user, enterprise, token, _ = await resolve_identity_context(
+        user_id=user_id,
+        enterprise_id=enterprise_id,
+        authorization=authorization,
+    )
+    return user, enterprise, token
+
+
+async def resolve_identity_context(
+    *,
+    user_id: int,
+    enterprise_id: int,
+    authorization: str | None,
+) -> tuple[int, int, str, AuthContext | None]:
+    """As resolve_identity, but also hands back the verified claims.
+
+    For callers that need more than the three identity values — whether the
+    turn is ClickPost support activity, which employee is acting — and must
+    tell "clickpost signed this" apart from "the client asserted it". The
+    context is None when JWT auth is disabled, i.e. local testing, where there
+    is nothing signed to prefer.
+    """
     if settings.agent_jwt_enabled:
         ctx = await require_auth(authorization=authorization)
-        return ctx.user_id, ctx.enterprise_id, ctx.cp_token
+        return ctx.user_id, ctx.enterprise_id, ctx.cp_token, ctx
 
     return (
         resolve_user_id(user_id),
         resolve_enterprise_id(enterprise_id),
         resolve_token(authorization=authorization),
+        None,
     )

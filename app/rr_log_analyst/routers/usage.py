@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -140,6 +140,53 @@ async def _pool_for(session, *, enterprise_id: int, period_start, period_end) ->
     )
 
 
+def _resolve_period(period_start: date | None) -> tuple[date, date]:
+    """Bounds for the requested billing period, defaulting to the current one.
+
+    Any date inside the month is accepted and snapped to that month, so a client
+    may send `2026-08-14` or `2026-08-01` and mean the same thing. Delegated to
+    `period_bounds` rather than reimplemented, so the December rollover and the
+    half-open end have exactly one definition.
+    """
+    if period_start is None:
+        return period_bounds()
+    return period_bounds(
+        datetime.combine(period_start, time.min, tzinfo=timezone.utc)
+    )
+
+
+def _resolve_window(
+    period_start: date | None, frm: date | None, to: date | None
+) -> tuple[date, date, date]:
+    """Resolve the two different time questions these endpoints answer.
+
+    Returns `(window_start, window_end, pool_period_start)`. The window is what
+    usage is summed over and may be any range; the pool is a *billing period*
+    and can only ever be a calendar month, because that is what an
+    `enterprise_budget` row is. Conflating them would let a caller ask for "the
+    pool between 15 August and 20 September", which does not exist.
+
+    Precedence: an explicit `from`/`to` wins; otherwise `period_start` is
+    shorthand for the calendar month containing it; otherwise the current
+    period. When a range is given, the pool reported alongside is the period
+    the range *starts* in.
+    """
+    if frm is not None or to is not None:
+        if frm is None or to is None:
+            raise HTTPException(
+                status_code=422, detail="Provide both `from` and `to`, or neither."
+            )
+        if to <= frm:
+            raise HTTPException(status_code=422, detail="`to` must be after `from`.")
+        pool_start, _ = period_bounds(
+            datetime.combine(frm, time.min, tzinfo=timezone.utc)
+        )
+        return frm, to, pool_start
+
+    start, end = _resolve_period(period_start)
+    return start, end, start
+
+
 def _blank_to_none(value: str | None) -> str | None:
     """Treat an empty query parameter as absent.
 
@@ -193,6 +240,21 @@ async def my_usage(
     identity: tuple[int, int, str] = Depends(_resolve_identity_query),
     internal_user_id: str | None = None,
     is_internal_user: bool = False,
+    period_start: date | None = Query(
+        None,
+        description=(
+            "Any date inside the billing period to report on; snapped to that "
+            "month. Shorthand for a from/to spanning that month."
+        ),
+    ),
+    frm: date | None = Query(
+        None,
+        alias="from",
+        description="Inclusive UTC start of an arbitrary window. Overrides period_start.",
+    ),
+    to: date | None = Query(
+        None, description="Exclusive UTC end. Required whenever `from` is given."
+    ),
     session: AsyncSession = Depends(get_db),
 ):
     """This caller's own spend, and the state of both limits that can stop them.
@@ -208,7 +270,7 @@ async def my_usage(
     if not is_internal_user:
         internal_user_id = None
 
-    period_start, period_end = period_bounds()
+    window_start, window_end, pool_period = _resolve_window(period_start, frm, to)
     usage_repo = UsageRepository(session)
 
     totals = await usage_repo.for_user(
@@ -216,8 +278,8 @@ async def my_usage(
         user_id=user_id,
         is_internal_user=is_internal_user,
         internal_user_id=internal_user_id,
-        period_start=period_start,
-        period_end=period_end,
+        period_start=window_start,
+        period_end=window_end,
     )
 
     token_row = await UserTokenRepository(session).get_owned(
@@ -233,19 +295,20 @@ async def my_usage(
     # one here would imply these turns are consuming it.
     pool = None
     if not is_internal_user:
+        pool_start, pool_end = _resolve_period(pool_period)
         pool = await _pool_for(
             session,
             enterprise_id=enterprise_id,
-            period_start=period_start,
-            period_end=period_end,
+            period_start=pool_start,
+            period_end=pool_end,
         )
 
     return MyUsageResponse(
         user_id=user_id,
         enterprise_id=enterprise_id,
         is_internal_user=is_internal_user,
-        period_start=period_start,
-        period_end=period_end,
+        period_start=window_start,
+        period_end=window_end,
         turns=totals.turns,
         cost_micros=totals.cost_micros,
         tokens=_tokens(totals),
@@ -264,6 +327,21 @@ async def enterprise_usage(
     identity: tuple[int, int, str, AuthContext | None] = Depends(
         _resolve_identity_query_ctx
     ),
+    period_start: date | None = Query(
+        None,
+        description=(
+            "Any date inside the billing period to report on; snapped to that "
+            "month. Shorthand for a from/to spanning that month."
+        ),
+    ),
+    frm: date | None = Query(
+        None,
+        alias="from",
+        description="Inclusive UTC start of an arbitrary window. Overrides period_start.",
+    ),
+    to: date | None = Query(
+        None, description="Exclusive UTC end. Required whenever `from` is given."
+    ),
     session: AsyncSession = Depends(get_db),
 ):
     """The enterprise's shared pool and what it has spent this period.
@@ -274,29 +352,27 @@ async def enterprise_usage(
     restricted to an enterprise admin.
     """
     _, enterprise_id, _, ctx = identity
-    period_start, period_end = period_bounds()
+    window_start, window_end, pool_period = _resolve_window(period_start, frm, to)
+    pool_start, pool_end = _resolve_period(pool_period)
 
     usage_repo = UsageRepository(session)
-    budget = await BudgetRepository(session).get(
-        enterprise_id=enterprise_id, period_start=period_start
-    )
 
     totals = await usage_repo.for_enterprise(
         enterprise_id=enterprise_id,
-        period_start=period_start,
-        period_end=period_end,
+        period_start=window_start,
+        period_end=window_end,
     )
     active = await usage_repo.active_users(
         enterprise_id=enterprise_id,
-        period_start=period_start,
-        period_end=period_end,
+        period_start=window_start,
+        period_end=window_end,
     )
 
     pool = await _pool_for(
         session,
         enterprise_id=enterprise_id,
-        period_start=period_start,
-        period_end=period_end,
+        period_start=pool_start,
+        period_end=pool_end,
     )
 
     return EnterpriseUsageResponse(
@@ -349,6 +425,21 @@ async def _resolve_admin_identity(
 @router.get("/enterprise/users", response_model=EnterpriseUsersResponse)
 async def enterprise_users(
     identity: tuple[int, int, str, AuthContext | None] = Depends(_resolve_admin_identity),
+    period_start: date | None = Query(
+        None,
+        description=(
+            "Any date inside the billing period to report on; snapped to that "
+            "month. Shorthand for a from/to spanning that month."
+        ),
+    ),
+    frm: date | None = Query(
+        None,
+        alias="from",
+        description="Inclusive UTC start of an arbitrary window. Overrides period_start.",
+    ),
+    to: date | None = Query(
+        None, description="Exclusive UTC end. Required whenever `from` is given."
+    ),
     session: AsyncSession = Depends(get_db),
 ):
     """Per-member spend for the period, ranked, highest first.
@@ -358,19 +449,19 @@ async def enterprise_users(
     question whose answer is "ignore that row".
     """
     _, enterprise_id, _, ctx = identity
-    period_start, period_end = period_bounds()
+    window_start, window_end, _pool = _resolve_window(period_start, frm, to)
 
     members = await UsageRepository(session).users(
         enterprise_id=enterprise_id,
-        period_start=period_start,
-        period_end=period_end,
+        period_start=window_start,
+        period_end=window_end,
     )
     total = sum(m["cost_micros"] for m in members)
 
     return EnterpriseUsersResponse(
         enterprise_id=enterprise_id,
-        period_start=period_start,
-        period_end=period_end,
+        period_start=window_start,
+        period_end=window_end,
         members=[
             EnterpriseMember(
                 **m,
@@ -392,6 +483,12 @@ async def enterprise_series(
     identity: tuple[int, int, str, AuthContext | None] = Depends(_resolve_admin_identity),
     granularity: str = "day",
     days: int = 30,
+    frm: date | None = Query(
+        None,
+        alias="from",
+        description="Inclusive UTC start. Overrides `days` when given with `to`.",
+    ),
+    to: date | None = Query(None, description="Exclusive UTC end."),
     session: AsyncSession = Depends(get_db),
 ):
     """Cost and volume over time at day, week or month granularity.
@@ -406,20 +503,35 @@ async def enterprise_series(
             status_code=422,
             detail="granularity must be one of: day, week, month",
         )
-    if not 1 <= days <= 730:
-        raise HTTPException(status_code=422, detail="days must be between 1 and 730")
-
-    to = datetime.now(timezone.utc)
-    frm = to - timedelta(days=days)
+    # An explicit range wins over `days`, so a month picker and a rolling window
+    # can share one endpoint. `days` alone stays the default for a dashboard that
+    # just wants "recent".
+    if frm is not None or to is not None:
+        if frm is None or to is None:
+            raise HTTPException(
+                status_code=422, detail="Provide both `from` and `to`, or neither."
+            )
+        if to <= frm:
+            raise HTTPException(status_code=422, detail="`to` must be after `from`.")
+        window_from = datetime.combine(frm, time.min, tzinfo=timezone.utc)
+        window_to = datetime.combine(to, time.min, tzinfo=timezone.utc)
+    else:
+        if not 1 <= days <= 730:
+            raise HTTPException(status_code=422, detail="days must be between 1 and 730")
+        window_to = datetime.now(timezone.utc)
+        window_from = window_to - timedelta(days=days)
 
     points = await UsageRepository(session).series(
-        enterprise_id=enterprise_id, frm=frm, to=to, granularity=granularity
+        enterprise_id=enterprise_id,
+        frm=window_from,
+        to=window_to,
+        granularity=granularity,
     )
     return SeriesResponse(
         enterprise_id=enterprise_id,
         granularity=granularity,
-        **{"from": frm},
-        to=to,
+        **{"from": window_from},
+        to=window_to,
         points=[SeriesPoint(**p) for p in points],
     )
 
@@ -428,6 +540,21 @@ async def enterprise_series(
 async def enterprise_conversations(
     identity: tuple[int, int, str, AuthContext | None] = Depends(_resolve_admin_identity),
     limit: int = 20,
+    period_start: date | None = Query(
+        None,
+        description=(
+            "Any date inside the billing period to report on; snapped to that "
+            "month. Shorthand for a from/to spanning that month."
+        ),
+    ),
+    frm: date | None = Query(
+        None,
+        alias="from",
+        description="Inclusive UTC start of an arbitrary window. Overrides period_start.",
+    ),
+    to: date | None = Query(
+        None, description="Exclusive UTC end. Required whenever `from` is given."
+    ),
     session: AsyncSession = Depends(get_db),
 ):
     """Conversations ranked by cost — the answer to "what did we spend it on"."""
@@ -435,17 +562,17 @@ async def enterprise_conversations(
     if not 1 <= limit <= 200:
         raise HTTPException(status_code=422, detail="limit must be between 1 and 200")
 
-    period_start, period_end = period_bounds()
+    window_start, window_end, _pool = _resolve_window(period_start, frm, to)
     rows = await UsageRepository(session).conversations(
         enterprise_id=enterprise_id,
-        period_start=period_start,
-        period_end=period_end,
+        period_start=window_start,
+        period_end=window_end,
         limit=limit,
     )
     return ConversationsResponse(
         enterprise_id=enterprise_id,
-        period_start=period_start,
-        period_end=period_end,
+        period_start=window_start,
+        period_end=window_end,
         conversations=[ConversationCost(**r) for r in rows],
     )
 
@@ -484,6 +611,21 @@ async def enterprise_conversation_detail(
 @router.get("/enterprise/export.csv")
 async def enterprise_export(
     identity: tuple[int, int, str, AuthContext | None] = Depends(_resolve_admin_identity),
+    period_start: date | None = Query(
+        None,
+        description=(
+            "Any date inside the billing period to report on; snapped to that "
+            "month. Shorthand for a from/to spanning that month."
+        ),
+    ),
+    frm: date | None = Query(
+        None,
+        alias="from",
+        description="Inclusive UTC start of an arbitrary window. Overrides period_start.",
+    ),
+    to: date | None = Query(
+        None, description="Exclusive UTC end. Required whenever `from` is given."
+    ),
     session: AsyncSession = Depends(get_db),
 ):
     """Every ledger row for the period as CSV.
@@ -496,7 +638,7 @@ async def enterprise_export(
     reconciles, the dollar column is what opens correctly in a spreadsheet.
     """
     _, enterprise_id, _, _ = identity
-    period_start, period_end = period_bounds()
+    window_start, window_end, _pool = _resolve_window(period_start, frm, to)
     repo = UsageRepository(session)
 
     async def rows():
@@ -509,8 +651,8 @@ async def enterprise_export(
         yield header
         async for r in repo.export_rows(
             enterprise_id=enterprise_id,
-            period_start=period_start,
-            period_end=period_end,
+            period_start=window_start,
+            period_end=window_end,
         ):
             yield (
                 f"{r.created_at.isoformat()},{r.user_id},{r.is_internal_user},"
@@ -521,7 +663,12 @@ async def enterprise_export(
                 f"{r.cost_micros},{r.cost_micros / 1_000_000:.6f},{r.pricing_failed}\n"
             )
 
-    filename = f"clickhelp-usage-{enterprise_id}-{period_start:%Y-%m}.csv"
+    # Name it after the actual window, so two exports from different ranges
+    # cannot land in a downloads folder under the same name.
+    filename = (
+        f"clickhelp-usage-{enterprise_id}-{window_start:%Y-%m-%d}"
+        f"_{window_end:%Y-%m-%d}.csv"
+    )
     return StreamingResponse(
         rows(),
         media_type="text/csv",

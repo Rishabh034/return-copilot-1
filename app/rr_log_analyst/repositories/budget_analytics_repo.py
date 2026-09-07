@@ -380,6 +380,7 @@ class BudgetAnalyticsRepository:
                 select(
                     LlmUsageLedger.user_id,
                     LlmUsageLedger.is_internal_user,
+                    LlmUsageLedger.internal_user_id,
                     func.count().label("turns"),
                     func.coalesce(func.sum(LlmUsageLedger.cost_micros), 0).label("cost"),
                     func.coalesce(func.sum(LlmUsageLedger.input_tokens), 0),
@@ -391,7 +392,15 @@ class BudgetAnalyticsRepository:
                     LlmUsageLedger.created_at >= frm,
                     LlmUsageLedger.created_at < to,
                 )
-                .group_by(LlmUsageLedger.user_id, LlmUsageLedger.is_internal_user)
+                # internal_user_id is part of the key, not just a column: ClickPost
+                # staff share one Django account, so grouping on user_id alone
+                # merges every employee into a single anonymous "internal" row and
+                # loses the attribution this field exists to provide.
+                .group_by(
+                    LlmUsageLedger.user_id,
+                    LlmUsageLedger.is_internal_user,
+                    LlmUsageLedger.internal_user_id,
+                )
                 .order_by(func.sum(LlmUsageLedger.cost_micros).desc())
             )
         ).all()
@@ -400,13 +409,14 @@ class BudgetAnalyticsRepository:
             {
                 "user_id": u,
                 "is_internal_user": internal,
+                "internal_user_id": iid,
                 "turns": t,
                 "cost_micros": int(c),
                 "input_tokens": int(i),
                 "output_tokens": int(o),
                 "last_active": last,
             }
-            for u, internal, t, c, i, o, last in rows
+            for u, internal, iid, t, c, i, o, last in rows
         ]
 
     async def top_conversations(

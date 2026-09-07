@@ -179,6 +179,13 @@ class BlocksResponse(BaseModel):
 class EnterpriseUser(BaseModel):
     user_id: int
     is_internal_user: bool
+    internal_user_id: str | None = Field(
+        None,
+        description=(
+            "Which ClickPost employee, when is_internal_user is true. Null for a "
+            "customer. Rows are keyed on the pair, because staff share one account"
+        ),
+    )
     turns: int
     cost_micros: int
     input_tokens: int

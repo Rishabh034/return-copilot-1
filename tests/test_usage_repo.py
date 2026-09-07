@@ -455,3 +455,75 @@ class TestConversationViews:
                 )
 
         assert run(go) == []
+
+
+class TestResolvePeriod:
+    """`period_start` accepts any date inside the month and snaps to it."""
+
+    def test_snaps_any_date_in_the_month_to_its_start(self):
+        from app.rr_log_analyst.routers.usage import _resolve_period
+
+        assert _resolve_period(date(2026, 8, 14)) == (date(2026, 8, 1), date(2026, 9, 1))
+        assert _resolve_period(date(2026, 8, 1)) == (date(2026, 8, 1), date(2026, 9, 1))
+        assert _resolve_period(date(2026, 8, 31)) == (date(2026, 8, 1), date(2026, 9, 1))
+
+    def test_december_rolls_into_the_next_year(self):
+        from app.rr_log_analyst.routers.usage import _resolve_period
+
+        assert _resolve_period(date(2026, 12, 9)) == (date(2026, 12, 1), date(2027, 1, 1))
+
+    def test_none_means_the_current_period(self):
+        from app.rr_log_analyst.repositories.budget_repo import period_bounds
+        from app.rr_log_analyst.routers.usage import _resolve_period
+
+        assert _resolve_period(None) == period_bounds()
+
+
+class TestAdminAttributesEachStaffMember:
+    """Regression: the admin drill-down grouped on (user_id, is_internal_user)
+    only, so every ClickPost employee on the shared account collapsed into one
+    anonymous row and the attribution internal_user_id exists for was lost."""
+
+    def test_two_staff_on_one_account_are_two_rows(self):
+        from app.rr_log_analyst.repositories.budget_analytics_repo import (
+            BudgetAnalyticsRepository,
+        )
+
+        async def go():
+            await _wipe()
+            await _add(user_id=14, internal_user_id="304875", is_internal_user=True,
+                       counted=False, cost=5_000)
+            await _add(user_id=14, internal_user_id="1013124", is_internal_user=True,
+                       counted=False, cost=7_000)
+            await _add(user_id=500, cost=3_000)  # a customer
+            async with AsyncSessionLocal() as s:
+                return await BudgetAnalyticsRepository(s).enterprise_users(
+                    enterprise_id=ENT,
+                    frm=datetime(2026, 3, 1, tzinfo=timezone.utc),
+                    to=datetime(2026, 4, 1, tzinfo=timezone.utc),
+                )
+
+        rows = run(go)
+        staff = {r["internal_user_id"]: r["cost_micros"]
+                 for r in rows if r["is_internal_user"]}
+        assert staff == {"304875": 5_000, "1013124": 7_000}, staff
+
+    def test_a_customer_row_carries_no_internal_user_id(self):
+        from app.rr_log_analyst.repositories.budget_analytics_repo import (
+            BudgetAnalyticsRepository,
+        )
+
+        async def go():
+            await _wipe()
+            await _add(user_id=500, cost=3_000)
+            async with AsyncSessionLocal() as s:
+                return await BudgetAnalyticsRepository(s).enterprise_users(
+                    enterprise_id=ENT,
+                    frm=datetime(2026, 3, 1, tzinfo=timezone.utc),
+                    to=datetime(2026, 4, 1, tzinfo=timezone.utc),
+                )
+
+        rows = run(go)
+        assert len(rows) == 1
+        assert rows[0]["internal_user_id"] is None
+        assert rows[0]["is_internal_user"] is False

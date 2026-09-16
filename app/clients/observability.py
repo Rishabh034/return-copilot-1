@@ -91,11 +91,11 @@ def langfuse_identity(
 ) -> dict[str, Any]:
     """Build kwargs for `trace_span` so cost rolls up enterprise → user → session."""
     user_type = "internal" if is_internal_user else "external"
-    langfuse_user = (
-        f"ent:{enterprise_id}_"+
-        f"int:{internal_user_id}"
-        if is_internal_user and internal_user_id
-        else f"ext:{user_id}"
+    langfuse_user = langfuse_user_id(
+        enterprise_id=enterprise_id,
+        user_id=user_id,
+        is_internal_user=is_internal_user,
+        internal_user_id=internal_user_id,
     )
     metadata: dict[str, str] = {
         "enterprise_id": str(enterprise_id),
@@ -185,3 +185,15 @@ def trace_span(
         # caller's `with trace_span(...)` block itself must propagate
         # normally here, not be swallowed as if tracing had failed.
         yield span
+
+
+def langfuse_user_id(
+    *,
+    enterprise_id: int,
+    user_id: int,
+    is_internal_user: bool,
+    internal_user_id: str | None,
+) -> str:
+    if is_internal_user and internal_user_id:
+        return f"ent:{enterprise_id}_int:{internal_user_id}"
+    return f"ext:{user_id}"

@@ -245,14 +245,14 @@ async def send_message(
         allowed = await token_repo.can_start(
             user_id=user_id,
             enterprise_id=enterprise_id,
-            is_internal_user=is_internal_user,
-            internal_user_id=internal_user_id,
+            is_internal_user=owner_is_internal_user,
+            internal_user_id=owner_internal_user_id,
         )
         quota = await token_repo.get_owned(
             user_id=user_id,
             enterprise_id=enterprise_id,
-            is_internal_user=is_internal_user,
-            internal_user_id=internal_user_id,
+            is_internal_user=owner_is_internal_user,
+            internal_user_id=owner_internal_user_id,
         )
         await session.commit()
 
@@ -423,8 +423,8 @@ async def send_message(
                     conversation_id=conversation_id,
                     enterprise_id=enterprise_id,
                     user_id=user_id,
-                    is_internal_user=is_internal_user,
-                    internal_user_id=internal_user_id,
+                    is_internal_user=owner_is_internal_user,
+                    internal_user_id=owner_internal_user_id,
                 ),
             ) as span:
                 try:
@@ -544,8 +544,8 @@ async def send_message(
                             await _settle_turn(
                                 user_id=user_id,
                                 enterprise_id=enterprise_id,
-                                is_internal_user=is_internal_user,
-                                internal_user_id=internal_user_id,
+                                is_internal_user=owner_is_internal_user,
+                                internal_user_id=owner_internal_user_id,
                                 conversation_id=uuid.UUID(conversation_id),
                                 human_message_id=human_row.id,
                                 input_tokens=settled_input,
@@ -654,8 +654,8 @@ async def send_message(
                                 _settle_turn(
                                     user_id=user_id,
                                     enterprise_id=enterprise_id,
-                                    is_internal_user=is_internal_user,
-                                    internal_user_id=internal_user_id,
+                                    is_internal_user=owner_is_internal_user,
+                                    internal_user_id=owner_internal_user_id,
                                     conversation_id=uuid.UUID(conversation_id),
                                     human_message_id=human_row.id,
                                     input_tokens=completed_input_tokens,

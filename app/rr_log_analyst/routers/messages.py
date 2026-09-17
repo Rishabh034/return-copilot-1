@@ -20,7 +20,10 @@ from app.exceptions import AppError, NotFoundError, BadRequestError
 from app.utilities.alerts import alert_slack
 from app.rr_log_analyst.agent import AgentRunner, build_context_note, build_system_prompt
 from app.rr_log_analyst.agent.context import merge_usage, serialize_usage
-from app.rr_log_analyst.auth import resolve_internal_actor
+from app.rr_log_analyst.auth import (
+    resolve_body_internal_actor,
+    resolve_internal_actor,
+)
 from app.rr_log_analyst.memory.store import _extract_thinking, utc_now_iso_ms
 from app.rr_log_analyst.models.budget_block_event import BudgetBlockEvent
 from app.rr_log_analyst.models.message import Message
@@ -221,6 +224,14 @@ async def send_message(
     identity: tuple[int, int, str, AuthContext | None] = Depends(_resolve_identity),
 ):
     user_id, enterprise_id, token, auth_ctx = identity
+    # which conversation list the chat is filed under follows the client's own
+    # flags, because that is what GET /conversations/ lists by, filing it under
+    # the signed identity instead of hiding it
+    # Billing below never reads these.
+    owner_is_internal_user, owner_internal_user_id = resolve_body_internal_actor(
+        body_is_internal_user=body.is_internal_user,
+        body_internal_user_id=body.internal_user_id,
+    )
     # Signed claims win over the body here — this flag decides whether the turn
     # is billed to the enterprise's pool. See resolve_internal_actor.
     is_internal_user, internal_user_id = resolve_internal_actor(
@@ -363,8 +374,8 @@ async def send_message(
                 uuid.UUID(body.conversation_id),
                 user_id=user_id,
                 enterprise_id=enterprise_id,
-                internal_user_id=internal_user_id,
-                is_internal_user=is_internal_user,
+                internal_user_id=owner_internal_user_id,
+                is_internal_user=owner_is_internal_user,
             )
             if conversation is None:
                 raise NotFoundError("Conversation not found")
@@ -424,16 +435,16 @@ async def send_message(
                             user_id=user_id,
                             enterprise_id=enterprise_id,
                             conversation_id=uuid.UUID(conversation_id),
-                            internal_user_id=internal_user_id,
-                            is_internal_user=is_internal_user,
+                            internal_user_id=owner_internal_user_id,
+                            is_internal_user=owner_is_internal_user,
                         )
                     else:
                         conversation = await repo.get_owned(
                             uuid.UUID(conversation_id),
                             user_id=user_id,
                             enterprise_id=enterprise_id,
-                            internal_user_id=internal_user_id,
-                            is_internal_user=is_internal_user,
+                            internal_user_id=owner_internal_user_id,
+                            is_internal_user=owner_is_internal_user,
                         )
                         if conversation is None:
                             raise NotFoundError("Conversation not found")
@@ -604,8 +615,8 @@ async def send_message(
                                 uuid.UUID(conversation_id),
                                 user_id=user_id,
                                 enterprise_id=enterprise_id,
-                                internal_user_id=internal_user_id,
-                                is_internal_user=is_internal_user,
+                                internal_user_id=owner_internal_user_id,
+                                is_internal_user=owner_is_internal_user,
                                 text=text,
                             )
                         )

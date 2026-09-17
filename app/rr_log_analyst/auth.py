@@ -81,10 +81,30 @@ def resolve_internal_actor(
             )
         return True, ctx.internal_user_id
 
-    is_internal = resolve_is_internal_user(body_is_internal_user)
-    internal_user_id = resolve_internal_user_id(body_internal_user_id)
-    if not is_internal:
+    return resolve_body_internal_actor(
+        body_is_internal_user=body_is_internal_user,
+        body_internal_user_id=body_internal_user_id,
+    )
+
+
+def resolve_body_internal_actor(
+    *,
+    body_is_internal_user: bool,
+    body_internal_user_id: str | None,
+) -> tuple[bool, str | None]:
+    """the internal flag exactly as the client sent it, validated but unsigned.
+
+    fit for deciding which conversation list a chat belongs to the sidebar
+    lists by these same query params, so a chat filed under anything else never
+    shows up there never use this for billing purpose because they can be altered
+    """
+    # A non-internal request never looks at the id, so a blank one ("") cannot
+    # 400 a customer's chat - before signed claims existed on this path it was
+    # never validated at all.
+    if not resolve_is_internal_user(body_is_internal_user):
         return False, None
+    internal_user_id = resolve_internal_user_id(body_internal_user_id)
     if internal_user_id is None:
         raise BadRequestError("Internal user ID is required")
     return True, internal_user_id
+

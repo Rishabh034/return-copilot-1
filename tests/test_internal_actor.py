@@ -15,7 +15,10 @@ from fastapi import HTTPException
 
 from app.dependencies.auth import AuthContext
 from app.exceptions import BadRequestError
-from app.rr_log_analyst.auth import resolve_internal_actor
+from app.rr_log_analyst.auth import (
+    resolve_body_internal_actor,
+    resolve_internal_actor,
+)
 
 
 def ctx(**overrides) -> AuthContext:
@@ -96,6 +99,31 @@ class TestSignedClaimWins:
                 body_internal_user_id="304875",
             )
         assert exc.value.status_code == 400
+
+
+class TestConversationOwnerIgnoresSignedClaim:
+    """a chat is filed under the flags the client lists by, or the sidebar never
+    shows it billing is a separate decision and stays signed."""
+
+    def test_owner_follows_body_where_billing_follows_token(self):
+        signed = ctx(is_internal_user=True, internal_user_id="304875")
+        body = dict(body_is_internal_user=False, body_internal_user_id=None)
+        assert resolve_body_internal_actor(**body) == (False, None)
+        assert resolve_internal_actor(ctx=signed, **body) == (True, "304875")
+
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_blank_id_on_a_customer_chat_is_ignored(self, blank):
+        """Some clients send an empty id for a non-internal user. That was never
+        validated on the signed path, and must not start failing chats now."""
+        assert resolve_body_internal_actor(
+            body_is_internal_user=False, body_internal_user_id=blank
+        ) == (False, None)
+
+    def test_internal_owner_needs_an_id(self):
+        with pytest.raises(BadRequestError):
+            resolve_body_internal_actor(
+                body_is_internal_user=True, body_internal_user_id=None
+            )
 
 
 class TestAuthContextDefaults:

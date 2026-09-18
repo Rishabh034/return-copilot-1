@@ -42,6 +42,7 @@ class ConversationRepository:
         conversation_id: uuid.UUID | None = None,
         internal_user_id: str | None = None,
         is_internal_user: bool = False,
+        agent_slug: str = "allocation",
     ) -> Conversation:
         conversation = Conversation(
             id=conversation_id or uuid.uuid4(),
@@ -49,6 +50,7 @@ class ConversationRepository:
             enterprise_id=enterprise_id,
             internal_user_id=internal_user_id,
             is_internal_user=is_internal_user,
+            agent_slug=agent_slug,
         )
         self._session.add(conversation)
         await self._session.flush()
@@ -93,6 +95,7 @@ class ConversationRepository:
         internal_user_id: str | None = None,
         is_internal_user: bool = False,
         now: datetime | None = None,
+        agent_slug: str | None = None,
     ) -> list[Conversation]:
         result = await self._session.execute(
             select(Conversation)
@@ -101,6 +104,7 @@ class ConversationRepository:
                 Conversation.enterprise_id == enterprise_id,
                 Conversation.internal_user_id == internal_user_id,
                 Conversation.is_internal_user == is_internal_user,
+                *( [Conversation.agent_slug == agent_slug] if agent_slug else [] ),
                 _available_conversation_clause(now),
             )
             .options(selectinload(Conversation.messages))

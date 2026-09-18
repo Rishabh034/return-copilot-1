@@ -4,7 +4,7 @@ import logging
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -16,6 +16,7 @@ from app.core.auth.actor import (
 )
 
 from app.core.conversations import to_display_messages
+from app.core.request_spec import agent_spec
 from app.core.repositories import ConversationRepository
 from app.core.conversations.message_mapper import rows_to_messages
 from app.core.conversations.conversations_schema import (
@@ -82,6 +83,7 @@ async def create_conversation(
 
 @router.get("/", response_model=list[ConversationSummary])
 async def list_conversations(
+    request: Request,
     identity: tuple[int, int, str] = Depends(_resolve_identity_query),
     internal_user_id: str | None = None,
     is_internal_user: bool = False,
@@ -104,6 +106,9 @@ async def list_conversations(
         enterprise_id=enterprise_id,
         internal_user_id=internal_user_id,
         is_internal_user=is_internal_user,
+        # Each agent lists only its own threads, so a second agent's history
+        # never appears in this one's sidebar.
+        agent_slug=agent_spec(request).slug,
     )
     logger.info(
         "Listed conversations user_id=%s enterprise_id=%s internal_user_id=%s is_internal_user=%s count=%s",

@@ -446,6 +446,7 @@ async def send_message(
                             conversation_id=uuid.UUID(conversation_id),
                             internal_user_id=owner_internal_user_id,
                             is_internal_user=owner_is_internal_user,
+                            agent_slug=SPEC.slug,
                         )
                     else:
                         conversation = await repo.get_owned(

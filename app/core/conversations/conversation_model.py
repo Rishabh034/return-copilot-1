@@ -22,6 +22,13 @@ class Conversation(Base):
     )
     user_id : Mapped[int] = mapped_column(Integer, nullable=False, index=True,default=0)
     enterprise_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    # Which agent owns this thread. Not routing — the URL decides that — but
+    # scoping: an agent lists only its own conversations, and the usage ledger
+    # can be attributed per agent. Backfilled to 'allocation' because every
+    # row that existed when this column landed was one.
+    agent_slug: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True, server_default="allocation"
+    )
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

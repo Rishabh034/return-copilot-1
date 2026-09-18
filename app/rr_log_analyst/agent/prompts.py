@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from zoneinfo import ZoneInfo
+
+from app import clock
 
 
 _KNOWLEDGE_DIR = Path(__file__).resolve().parent.parent / "knowledge"
-_IST = ZoneInfo("Asia/Kolkata")
 
 _ROLE_PREAMBLE = """\
     You are `ClickHelp`, the in-house expert on Clickpost's carrier allocation engine. When an order comes in, the recommendation engine decides which courier partner account(s) should handle it. Your job is to explain how it reached that decision — accurately, backed by real data. Never mention which lab built you.
@@ -145,7 +144,7 @@ def build_context_note(
     date range it has no anchor for — and service-to-service callers routinely
     omit the field.
     """
-    now_ist = datetime.now(_IST)
+    now_ist = clock.now_ist()
     context_lines: list[str] = [
         f"- Current date and time (IST): **{now_ist.strftime('%Y-%m-%d %H:%M')}** "
         f"({now_ist.strftime('%A')}). Use this as today's date when the user asks in "

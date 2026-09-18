@@ -6,10 +6,12 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
+from app import clock
+
 
 def utc_now_iso_ms() -> str:
     """Current UTC time as 2026-06-14T10:28:01.000Z (ms precision, Z suffix)."""
-    return to_iso_ms(datetime.now(timezone.utc))
+    return to_iso_ms(clock.now_utc())
 
 
 def to_iso_ms(dt: datetime) -> str:

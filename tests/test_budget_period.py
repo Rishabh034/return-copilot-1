@@ -12,7 +12,7 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-from app.rr_log_analyst.repositories.budget_repo import BudgetState, period_bounds
+from app.core.billing.budget_repo import BudgetState, period_bounds
 
 
 def at(year, month, day=15, hour=12):

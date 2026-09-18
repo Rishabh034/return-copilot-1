@@ -86,7 +86,7 @@ class Settings(BaseSettings):
         return v.replace("\\n", "\n") if v else v
 
     # Enterprise spend caps. Money is integer micro-dollars throughout
-    # (1 micro = $0.000001); see app/rr_log_analyst/services/pricing.py.
+    # (1 micro = $0.000001); see app/core/billing/pricing.py.
     #
     # The reservation is a hold placed before a turn runs, since a turn's real
     # cost is unknown until it finishes. It is admission control only and never

@@ -19,7 +19,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import HTTPException
 
 from app.config import settings
-from app.dependencies.auth import AgentAuthError, require_auth
+from app.core.auth.agent_token import AgentAuthError, require_auth
 
 ISSUER = "clickpost"
 AUDIENCE = "clickpost-ai-agent"

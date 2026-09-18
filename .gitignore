@@ -14,3 +14,7 @@ build/
 .pytest_cache/
 .idea
 logs/
+
+# Real user questions pulled from prod. Redacted but still not safe to commit:
+# company and personal names survive redaction. Local use only.
+tests/fixtures/local/

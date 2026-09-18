@@ -34,11 +34,11 @@ if RUN_DB_TESTS:
     from sqlalchemy import delete, select
 
     from app.db import AsyncSessionLocal, engine
-    from app.rr_log_analyst.models.budget_block_event import BudgetBlockEvent
-    from app.rr_log_analyst.models.enterprise_budget import EnterpriseBudget
-    from app.rr_log_analyst.models.usage_ledger import LlmUsageLedger
-    from app.rr_log_analyst.repositories.budget_repo import BudgetRepository
-    from app.rr_log_analyst.repositories.usage_ledger_repo import UsageLedgerRepository
+    from app.core.billing.budget_block_event_model import BudgetBlockEvent
+    from app.core.billing.enterprise_budget_model import EnterpriseBudget
+    from app.core.billing.usage_ledger_model import LlmUsageLedger
+    from app.core.billing.budget_repo import BudgetRepository
+    from app.core.billing.usage_ledger_repo import UsageLedgerRepository
 
 ENTERPRISE_ID = 999_000_042
 DOLLAR = 1_000_000
@@ -308,7 +308,7 @@ def test_pressure_ranks_by_share_of_cap_not_absolute_spend():
     Three enterprises with deliberately inverted spend-vs-ratio: the biggest
     spender has the loosest cap and must rank last.
     """
-    from app.rr_log_analyst.repositories.budget_analytics_repo import (
+    from app.core.billing.budget_analytics_repo import (
         BudgetAnalyticsRepository,
     )
 

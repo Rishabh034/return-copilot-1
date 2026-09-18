@@ -12,13 +12,15 @@ from app.clients.clickpost import ClickpostClient
 from app.clients.observability import init_langfuse, shutdown_langfuse
 from app.config import settings
 from app.cors_alert import CorsRejectionAlertMiddleware
-from app.dependencies.auth import AgentAuthError
+from app.core.auth.agent_token import AgentAuthError
 from app.exceptions import AppError, app_error_handler
 from app.log_uploader import S3LogUploader
 from app.logging_config import setup_logging
 from app.request_context import request_id_var
 from app.response_envelope import ENVELOPE_STATUS_HEADER, ResponseEnvelopeMiddleware
-from app.routers import rr_log_analyst_router
+from app.core import registry
+from app.core.agent_api import build_agent_router
+from app.core.routers import platform_router
 from app.utilities.alerts import alert_slack
 
 setup_logging()
@@ -126,10 +128,21 @@ def create_app() -> FastAPI:
     async def health():
         return {"status": "ok"}
 
+    # One conversational API per agent, at its own URL. Adding an agent is
+    # adding a directory under app/agents/ — nothing here changes.
+    for spec in registry.enabled():
+        application.include_router(
+            build_agent_router(spec),
+            prefix=f"/api/{spec.url_prefix}",
+            tags=[spec.slug],
+        )
+
+    # Budget, usage, admin and the service-to-service integrations API are
+    # enterprise-wide, not per-agent. They keep the path they are published on.
     application.include_router(
-        rr_log_analyst_router,
+        platform_router,
         prefix="/api/rr-log-analyst",
-        tags=["rr-log-analyst"],
+        tags=["platform"],
     )
 
     application.add_exception_handler(AppError, app_error_handler)

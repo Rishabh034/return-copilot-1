@@ -26,13 +26,17 @@ DEFAULT_EXTRA_TOKEN_COUNT_REQUEST = 0
 MIN_RANDOM_FACTOR = 0.1
 MAX_RANDOM_FACTOR = 1.0
 
-CUSTOM_CHECK_ENTERPRISE_IDS = [983809,281989,982598,281991,982385,36] # extend tokens for TMWR and USPL(36)
+CUSTOM_CHECK_ENTERPRISE_IDS = [983809,281989,982598,281991,982385,36] # extend tokens for TMWR and USPL(36) 
+TOKEN_EXTEND_AGAINST_USERID = [1013643] #token extent for pawan-tatacliq
 # INCREASE_TOKEN_LIMIT  = (datetime.now()>datetime(2026, 9, 2) and datetime.now()<datetime(2026, 9, 9)) # Token limit increase from 2nd sept to 9th sept
 EXTRA_TOKENS_START_DATE = datetime(2026,9,2)
 EXTRA_TOKENS_END_DATE   = datetime(2026,9,9)
 
 def _extra_tokens():
     return EXTRA_TOKENS_START_DATE <=datetime.now()<EXTRA_TOKENS_END_DATE
+
+def _extra_active(enterprise_id,user_id,is_internal_user):
+    return enterprise_id in CUSTOM_CHECK_ENTERPRISE_IDS or _extra_tokens() or (not is_internal_user and user_id in TOKEN_EXTEND_AGAINST_USERID)
 
 class UserTokenRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -56,8 +60,8 @@ class UserTokenRepository:
             id=uuid.uuid4(),
             user_id=user_id,
             enterprise_id=enterprise_id,
-            max_input_tokens=max_input_tokens if enterprise_id not in CUSTOM_CHECK_ENTERPRISE_IDS and not _extra_tokens() else CUSTOM_MAX_INPUT_TOKENS,
-            max_output_tokens=max_output_tokens if enterprise_id not in CUSTOM_CHECK_ENTERPRISE_IDS and not _extra_tokens() else CUSTOM_MAX_OUTPUT_TOKENS,
+            max_input_tokens=CUSTOM_MAX_INPUT_TOKENS if _extra_active(enterprise_id, user_id, is_internal_user) else max_input_tokens,
+            max_output_tokens=CUSTOM_MAX_OUTPUT_TOKENS if _extra_active(enterprise_id, user_id, is_internal_user) else max_output_tokens,
             window_start=now,
             reset_at=now + WINDOW,
             extra_token=extra_token,

@@ -165,6 +165,7 @@ async def summarize_raw_data_parts(
     tool_args: dict[str, Any],
     raw_data_parts: list[str],
     conversation_id: str | None = None,
+    agent_slug: str | None = None,
 ) -> ScratchpadBuildResult:
     """Run one new Haiku call per stored raw data part to build scratchpad batch summaries."""
     if not raw_data_parts:
@@ -206,7 +207,7 @@ async def summarize_raw_data_parts(
             async with semaphore:
                 return await llm.ainvoke(
                     [HumanMessage(content=prompt)],
-                    config=langchain_trace_config(conversation_id),
+                    config=langchain_trace_config(conversation_id, agent_slug=agent_slug),
                 )
         except Exception:
             logger.exception(

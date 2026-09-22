@@ -211,6 +211,7 @@ async def query(
     runner = AgentRunner(
         clickpost_client=client,
         build_tools=SPEC.build_tools,
+        agent_slug=SPEC.slug,
         runtime=SPEC.runtime,
         presentation=SPEC.presentation,
         tool_groups=SPEC.tool_groups,

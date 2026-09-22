@@ -235,12 +235,15 @@ class AgentRunner:
         self,
         clickpost_client: Any,
         build_tools: BuildTools | None = None,
+        agent_slug: str = "unknown",
         runtime: RuntimeSettings | None = None,
         presentation: Presentation = DEFAULT_PRESENTATION,
         tool_groups: dict[str, ToolGroupPolicy] | None = None,
         output_filter: OutputFilter = NULL_FILTER,
     ):
         self.clickpost_client = clickpost_client
+        # Tags this agent's traces so Langfuse can separate them by agent.
+        self.agent_slug = agent_slug
         # The agent's tools, supplied by its spec. The loop must never import an
         # agent package: that is the dependency inversion this whole refactor
         # exists to remove.
@@ -321,7 +324,7 @@ class AgentRunner:
 
             try:
                 async for chunk in runnable.astream(
-                    llm_input, config=langchain_trace_config(conversation_id)
+                    llm_input, config=langchain_trace_config(conversation_id, agent_slug=self.agent_slug)
                 ):
                     thinking_delta = _extract_thinking_delta(chunk.content)
                     if thinking_delta:
@@ -564,7 +567,12 @@ class AgentRunner:
                 elif summarize and secondary_llm is not None and raw_data_parts:
                     scratchpad_tasks.append(
                         summarize_raw_data_parts(
-                            secondary_llm, tool_name, tool_args, raw_data_parts, conversation_id
+                            secondary_llm,
+                            tool_name,
+                            tool_args,
+                            raw_data_parts,
+                            conversation_id,
+                            self.agent_slug,
                         )
                     )
                 else:

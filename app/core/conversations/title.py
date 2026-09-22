@@ -36,6 +36,7 @@ async def generate_conversation_title(
     *,
     user_message: str | list,
     conversation_id: str | None = None,
+    agent_slug: str | None = None,
 ) -> tuple[str | None, dict | None]:
     """Make a small Haiku call to title a conversation from its first exchange.
 
@@ -66,7 +67,7 @@ async def generate_conversation_title(
                 SystemMessage(content=_TITLE_SYSTEM_PROMPT),
                 HumanMessage(content=prompt),
             ],
-            config=langchain_trace_config(conversation_id),
+            config=langchain_trace_config(conversation_id, agent_slug=agent_slug),
         )
         usage = getattr(response, "usage_metadata", None) or None
         title = _coerce_text(response.content).strip().strip('"').strip()

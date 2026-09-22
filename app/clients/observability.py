@@ -88,8 +88,15 @@ def langfuse_identity(
     user_id: int,
     is_internal_user: bool,
     internal_user_id: str | None,
+    agent_slug: str,
 ) -> dict[str, Any]:
-    """Build kwargs for `trace_span` so cost rolls up enterprise → user → session."""
+    """Build kwargs for `trace_span` so cost rolls up agent → enterprise → user → session.
+
+    `agent_slug` is a tag as well as metadata because tags are what the Langfuse
+    UI filters on. Without it every agent's traces land in one undifferentiated
+    pile, and "what does this agent cost, and how slow is it" is unanswerable —
+    with no join to fall back on, because the traces live in another system.
+    """
     user_type = "internal" if is_internal_user else "external"
     langfuse_user = langfuse_user_id(
         enterprise_id=enterprise_id,
@@ -98,6 +105,7 @@ def langfuse_identity(
         internal_user_id=internal_user_id,
     )
     metadata: dict[str, str] = {
+        "agent": agent_slug,
         "enterprise_id": str(enterprise_id),
         "dashboard_user_id": str(user_id),
         "user_type": user_type,
@@ -108,7 +116,11 @@ def langfuse_identity(
     return {
         "session_id": conversation_id,
         "user_id": langfuse_user,
-        "tags": [f"enterprise:{enterprise_id}", f"user_type:{user_type}"],
+        "tags": [
+            f"agent:{agent_slug}",
+            f"enterprise:{enterprise_id}",
+            f"user_type:{user_type}",
+        ],
         "metadata": metadata,
     }
 
@@ -117,6 +129,7 @@ def langchain_trace_config(
     session_id: str | None = None,
     *,
     user_id: str | None = None,
+    agent_slug: str | None = None,
 ) -> dict:
     """Build a LangChain `config=` dict that routes a call through Langfuse.
 
@@ -134,6 +147,8 @@ def langchain_trace_config(
         metadata["langfuse_session_id"] = session_id
     if user_id:
         metadata["langfuse_user_id"] = user_id
+    if agent_slug:
+        metadata["agent"] = agent_slug
     if metadata:
         config["metadata"] = metadata
     return config

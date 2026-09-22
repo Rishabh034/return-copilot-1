@@ -374,6 +374,7 @@ async def send_message(
     runner = AgentRunner(
         clickpost_client=clickpost_client,
         build_tools=SPEC.build_tools,
+        agent_slug=SPEC.slug,
         runtime=SPEC.runtime,
         presentation=SPEC.presentation,
         tool_groups=SPEC.tool_groups,
@@ -441,6 +442,7 @@ async def send_message(
                     user_id=user_id,
                     is_internal_user=owner_is_internal_user,
                     internal_user_id=owner_internal_user_id,
+                    agent_slug=SPEC.slug,
                 ),
             ) as span:
                 try:
@@ -483,6 +485,7 @@ async def send_message(
                         title, title_usage = await generate_conversation_title(
                             user_message=human_message.content,
                             conversation_id=conversation_id,
+                            agent_slug=SPEC.slug,
                         )
                         if title:
                             conversation.title = title

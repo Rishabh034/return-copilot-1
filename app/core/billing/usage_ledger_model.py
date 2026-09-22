@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Index, Integer, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -55,6 +55,13 @@ class LlmUsageLedger(Base):
     # Not FKs: a ledger row is a financial record and must survive the
     # conversation being deleted, which cascades from `conversation`.
     conversation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    # Which agent served this turn. Denormalised rather than joined through
+    # `conversation`: cost-per-agent is the first question anyone asks once a
+    # second agent exists, and a join that happens to work today is one schema
+    # change away from silently dropping rows from a spend report.
+    agent_slug: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True, server_default="allocation"
+    )
     message_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
 
     model: Mapped[str] = mapped_column(Text, nullable=False)

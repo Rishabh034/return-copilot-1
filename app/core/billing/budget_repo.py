@@ -259,6 +259,7 @@ class BudgetRepository:
         user_id: int,
         is_internal_user: bool,
         limit_kind: str,
+        agent_slug: str,
         state: BudgetState | None = None,
     ) -> None:
         """Log a refusal so "how often are we blocking people" has an answer.
@@ -273,6 +274,7 @@ class BudgetRepository:
                 user_id=user_id,
                 is_internal_user=is_internal_user,
                 limit_kind=limit_kind,
+                agent_slug=agent_slug,
                 period_start=state.period_start if state else None,
                 limit_micros=state.limit_micros if state else None,
                 spent_micros=state.spent_micros if state else None,

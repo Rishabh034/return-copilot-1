@@ -40,6 +40,11 @@ class BudgetBlockEvent(Base):
     )
 
     limit_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Which agent's turn was refused, so "who is getting throttled" can be
+    # answered per agent rather than only per enterprise.
+    agent_slug: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True, server_default="allocation"
+    )
     period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     # State at the moment of the decision. Null for the token-window limit,

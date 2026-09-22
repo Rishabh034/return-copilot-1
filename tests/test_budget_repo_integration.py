@@ -261,6 +261,7 @@ def test_ledger_prices_a_turn_and_flags_an_unknown_model():
                 internal_user_id=None,
                 conversation_id=uuid.uuid4(),
                 message_id=uuid.uuid4(),
+                agent_slug="allocation",
                 model="claude-sonnet-4-6",
                 usage={
                     "input_tokens": 158_000,
@@ -278,6 +279,7 @@ def test_ledger_prices_a_turn_and_flags_an_unknown_model():
                 internal_user_id="support",
                 conversation_id=uuid.uuid4(),
                 message_id=None,
+                agent_slug="allocation",
                 model="claude-does-not-exist",
                 usage={"input_tokens": 500, "output_tokens": 10},
                 counted_against_pool=False,

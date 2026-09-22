@@ -60,6 +60,7 @@ async def _settle_turn(
     budget_state: BudgetState | None = None,
     model: str,
     secondary_model: str,
+    agent_slug: str,
 ) -> None:
     """Close the books on one turn: rate-limit quota, cost ledger, spend cap.
 
@@ -103,6 +104,7 @@ async def _settle_turn(
                 internal_user_id=internal_user_id,
                 conversation_id=conversation_id,
                 message_id=human_message_id,
+                agent_slug=agent_slug,
                 model=model,
                 usage=usage,
                 secondary_model=secondary_model if secondary_usage else None,
@@ -225,6 +227,10 @@ async def send_message(
     identity: tuple[int, int, str, AuthContext | None] = Depends(_resolve_identity),
 ):
     user_id, enterprise_id, token, auth_ctx = identity
+    # Resolved from the mount this request arrived on, before anything else:
+    # a turn refused by the quota or budget gate below is still that agent's
+    # refusal, and the block event records which one.
+    SPEC = agent_spec(request)
     # which conversation list the chat is filed under follows the client's own
     # flags, because that is what GET /conversations/ lists by, filing it under
     # the signed identity instead of hiding it
@@ -280,6 +286,7 @@ async def send_message(
                 user_id=user_id,
                 is_internal_user=is_internal_user,
                 limit_kind=BudgetBlockEvent.USER_TOKEN_WINDOW,
+                agent_slug=SPEC.slug,
             )
             await session.commit()
 
@@ -314,6 +321,7 @@ async def send_message(
                     user_id=user_id,
                     is_internal_user=is_internal_user,
                     limit_kind=BudgetBlockEvent.ENTERPRISE_BUDGET,
+                    agent_slug=SPEC.slug,
                     state=budget_state,
                 )
             await session.commit()
@@ -350,7 +358,6 @@ async def send_message(
                 headers={"Retry-After": str(retry_after)},
             )
 
-    SPEC = agent_spec(request)
     clickpost_client = getattr(request.app.state, "clickpost_client", None)
     enterprise_name = body.enterprise_name if body.enterprise_name else None
     username = body.username if body.username else None
@@ -569,6 +576,7 @@ async def send_message(
                                 budget_state=budget_state,
                                 model=SPEC.runtime.model,
                                 secondary_model=SPEC.runtime.secondary_model,
+                                agent_slug=SPEC.slug,
                             )
                             usage_settled = True
                             thinking = (
@@ -679,6 +687,7 @@ async def send_message(
                                     budget_state=budget_state,
                                     model=SPEC.runtime.model,
                                     secondary_model=SPEC.runtime.secondary_model,
+                                    agent_slug=SPEC.slug,
                                 )
                             )
                         else:

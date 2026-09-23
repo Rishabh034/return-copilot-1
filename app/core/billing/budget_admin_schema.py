@@ -64,6 +64,9 @@ class OverviewResponse(BaseModel):
 
 class EnterprisePressure(BaseModel):
     enterprise_id: int
+    agent_slug: str = Field(
+        ..., description="Each agent has its own cap; an enterprise running two agents appears twice"
+    )
     period_start: date
     period_end: date
     limit_micros: int

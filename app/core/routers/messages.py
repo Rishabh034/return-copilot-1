@@ -88,6 +88,7 @@ async def _settle_turn(
             await repo.update_tokens(
                 user_id=user_id,
                 enterprise_id=enterprise_id,
+                agent_slug=agent_slug,
                 is_internal_user=is_internal_user,
                 internal_user_id=internal_user_id,
                 input_tokens=input_tokens,
@@ -120,6 +121,7 @@ async def _settle_turn(
         if budget_state is not None and budget_state.allowed:
             await BudgetRepository(session).settle(
                 enterprise_id=enterprise_id,
+                agent_slug=agent_slug,
                 period_start=budget_state.period_start,
                 estimate_micros=budget_state.estimate_micros,
                 actual_micros=cost_micros,
@@ -129,7 +131,7 @@ async def _settle_turn(
 
 
 async def _release_budget_hold(
-    *, enterprise_id: int, budget_state: BudgetState | None
+    *, enterprise_id: int, agent_slug: str, budget_state: BudgetState | None
 ) -> None:
     """Drop a hold for a turn that never reached settlement."""
     if budget_state is None or not budget_state.allowed:
@@ -138,6 +140,7 @@ async def _release_budget_hold(
         async with AsyncSessionLocal() as session:
             await BudgetRepository(session).release(
                 enterprise_id=enterprise_id,
+                agent_slug=agent_slug,
                 period_start=budget_state.period_start,
                 estimate_micros=budget_state.estimate_micros,
             )
@@ -252,12 +255,14 @@ async def send_message(
         allowed = await token_repo.can_start(
             user_id=user_id,
             enterprise_id=enterprise_id,
+            agent_slug=SPEC.slug,
             is_internal_user=owner_is_internal_user,
             internal_user_id=owner_internal_user_id,
         )
         quota = await token_repo.get_owned(
             user_id=user_id,
             enterprise_id=enterprise_id,
+            agent_slug=SPEC.slug,
             is_internal_user=owner_is_internal_user,
             internal_user_id=owner_internal_user_id,
         )
@@ -314,7 +319,9 @@ async def send_message(
     if not is_internal_user:
         async with AsyncSessionLocal() as session:
             budget_repo = BudgetRepository(session)
-            budget_state = await budget_repo.reserve(enterprise_id=enterprise_id)
+            budget_state = await budget_repo.reserve(
+                enterprise_id=enterprise_id, agent_slug=SPEC.slug
+            )
             if not budget_state.allowed:
                 await budget_repo.record_block(
                     enterprise_id=enterprise_id,
@@ -697,6 +704,7 @@ async def send_message(
                             await asyncio.shield(
                                 _release_budget_hold(
                                     enterprise_id=enterprise_id,
+                                    agent_slug=SPEC.slug,
                                     budget_state=budget_state,
                                 )
                             )

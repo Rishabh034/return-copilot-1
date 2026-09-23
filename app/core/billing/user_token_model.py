@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, Index, Integer, Text, text
+from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -23,10 +23,13 @@ def _default_reset_at() -> datetime:
 class UserToken(Base):
     __tablename__ = "user_token"
     __table_args__ = (
+        # Agent-scoped: each agent draws down its own window rather than
+        # sharing one rate limit across every product a user happens to touch.
         Index(
             "uq_user_token_active_external",
             "user_id",
             "enterprise_id",
+            "agent_slug",
             unique=True,
             postgresql_where=text("is_active AND NOT is_internal_user"),
         ),
@@ -35,6 +38,7 @@ class UserToken(Base):
             "user_id",
             "enterprise_id",
             "internal_user_id",
+            "agent_slug",
             unique=True,
             postgresql_where=text("is_active AND is_internal_user"),
         ),
@@ -45,6 +49,12 @@ class UserToken(Base):
     )
     enterprise_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    # Which agent this window belongs to. Part of the active-window uniqueness
+    # above: two agents must not share a rate-limit window just because they
+    # share a user, or throttling one agent's UI would throttle every other.
+    agent_slug: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True, server_default="allocation"
+    )
     internal_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_internal_user: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="true"

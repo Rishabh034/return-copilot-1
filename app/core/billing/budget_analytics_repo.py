@@ -91,7 +91,10 @@ class BudgetAnalyticsRepository:
                 select(
                     func.coalesce(func.sum(EnterpriseBudget.limit_micros), 0),
                     func.coalesce(func.sum(EnterpriseBudget.reserved_micros), 0),
-                    func.count(),
+                    # Distinct, not a row count: an enterprise now has one budget
+                    # row per agent, and a plain count() would double it for
+                    # every enterprise using a second agent.
+                    func.count(func.distinct(EnterpriseBudget.enterprise_id)),
                     func.coalesce(
                         func.sum(
                             case(
@@ -145,18 +148,31 @@ class BudgetAnalyticsRepository:
 
     # --- C5 -----------------------------------------------------------------
 
-    async def pressure(self, *, limit: int = 50, period_start: date | None = None) -> list[dict]:
-        """Enterprises ranked by share of cap consumed, with a run-rate projection.
+    async def pressure(
+        self,
+        *,
+        limit: int = 50,
+        period_start: date | None = None,
+        agent_slug: str | None = None,
+    ) -> list[dict]:
+        """Budget rows ranked by share of cap consumed, with a run-rate projection.
+
+        One row per (enterprise, agent): each agent has its own cap, so an
+        enterprise running two agents appears twice, distinguished by
+        `agent_slug`. Pass it to narrow to one agent's rows.
 
         The projection is the column that earns this screen its place: it names
         who *will* breach before they do, from elapsed-day spend rate, rather
         than reporting a breach after the fact.
         """
         period_start = period_start or period_bounds()[0]
+        clauses = [EnterpriseBudget.period_start == period_start]
+        if agent_slug is not None:
+            clauses.append(EnterpriseBudget.agent_slug == agent_slug)
         rows = (
             await self._session.execute(
                 select(EnterpriseBudget)
-                .where(EnterpriseBudget.period_start == period_start)
+                .where(and_(*clauses))
                 .order_by(
                     # Float, not Integer: Postgres integer division truncates, so
                     # an Integer cast makes every enterprise under its cap sort as
@@ -179,6 +195,7 @@ class BudgetAnalyticsRepository:
             out.append(
                 {
                     "enterprise_id": r.enterprise_id,
+                    "agent_slug": r.agent_slug,
                     "period_start": r.period_start,
                     "period_end": r.period_end,
                     "limit_micros": r.limit_micros,
@@ -463,6 +480,7 @@ class BudgetAnalyticsRepository:
         self,
         *,
         enterprise_id: int,
+        agent_slug: str,
         period_start: date,
         limit_micros: int | None = None,
         enforcement_enabled: bool | None = None,
@@ -477,6 +495,7 @@ class BudgetAnalyticsRepository:
             update(EnterpriseBudget)
             .where(
                 EnterpriseBudget.enterprise_id == enterprise_id,
+                EnterpriseBudget.agent_slug == agent_slug,
                 EnterpriseBudget.period_start == period_start,
             )
             .values(**values)

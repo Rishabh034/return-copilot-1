@@ -54,6 +54,13 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# These endpoints are platform-wide (mounted once, not per agent — see
+# app/core/routers/__init__.py), so unlike the per-agent chat routes there is
+# no request.state.agent_spec to read the caller's agent from. Callers that
+# predate multi-agent budgets don't know to send one, so default to the one
+# agent that existed before this split, matching the column's own server_default.
+DEFAULT_AGENT_SLUG = "allocation"
+
 
 async def _resolve_identity_query(
     user_id: int,
@@ -115,7 +122,9 @@ def _pool_state(budget: EnterpriseBudget) -> PoolState:
     )
 
 
-async def _pool_for(session, *, enterprise_id: int, period_start, period_end) -> PoolState:
+async def _pool_for(
+    session, *, enterprise_id: int, agent_slug: str, period_start, period_end
+) -> PoolState:
     """The pool as both endpoints must report it.
 
     Shared so `/usage/me` and `/usage/enterprise` cannot disagree: a period with
@@ -124,7 +133,7 @@ async def _pool_for(session, *, enterprise_id: int, period_start, period_end) ->
     whichever screen the user looked at second.
     """
     budget = await BudgetRepository(session).get(
-        enterprise_id=enterprise_id, period_start=period_start
+        enterprise_id=enterprise_id, agent_slug=agent_slug, period_start=period_start
     )
     if budget is not None:
         return _pool_state(budget)
@@ -240,6 +249,13 @@ async def my_usage(
     identity: tuple[int, int, str] = Depends(_resolve_identity_query),
     internal_user_id: str | None = None,
     is_internal_user: bool = False,
+    agent_slug: str = Query(
+        DEFAULT_AGENT_SLUG,
+        description=(
+            "Which agent's rate-limit window and spend pool to report. Each "
+            "agent has its own; omit for the original agent."
+        ),
+    ),
     period_start: date | None = Query(
         None,
         description=(
@@ -285,6 +301,7 @@ async def my_usage(
     token_row = await UserTokenRepository(session).get_owned(
         user_id=user_id,
         enterprise_id=enterprise_id,
+        agent_slug=agent_slug,
         is_internal_user=is_internal_user,
         internal_user_id=internal_user_id,
     )
@@ -299,6 +316,7 @@ async def my_usage(
         pool = await _pool_for(
             session,
             enterprise_id=enterprise_id,
+            agent_slug=agent_slug,
             period_start=pool_start,
             period_end=pool_end,
         )
@@ -326,6 +344,13 @@ async def my_usage(
 async def enterprise_usage(
     identity: tuple[int, int, str, AuthContext | None] = Depends(
         _resolve_identity_query_ctx
+    ),
+    agent_slug: str = Query(
+        DEFAULT_AGENT_SLUG,
+        description=(
+            "Which agent's spend pool to report. Each agent has its own; "
+            "omit for the original agent."
+        ),
     ),
     period_start: date | None = Query(
         None,
@@ -371,6 +396,7 @@ async def enterprise_usage(
     pool = await _pool_for(
         session,
         enterprise_id=enterprise_id,
+        agent_slug=agent_slug,
         period_start=pool_start,
         period_end=pool_end,
     )

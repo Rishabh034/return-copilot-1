@@ -47,6 +47,7 @@ class UserTokenRepository:
         *,
         user_id: int,
         enterprise_id: int,
+        agent_slug: str,
         is_internal_user: bool,
         internal_user_id: str | None,
         now: datetime | None = None,
@@ -60,6 +61,7 @@ class UserTokenRepository:
             id=uuid.uuid4(),
             user_id=user_id,
             enterprise_id=enterprise_id,
+            agent_slug=agent_slug,
             max_input_tokens=CUSTOM_MAX_INPUT_TOKENS if _extra_active(enterprise_id, user_id, is_internal_user) else max_input_tokens,
             max_output_tokens=CUSTOM_MAX_OUTPUT_TOKENS if _extra_active(enterprise_id, user_id, is_internal_user) else max_output_tokens,
             window_start=now,
@@ -80,6 +82,7 @@ class UserTokenRepository:
         *,
         user_id: int,
         enterprise_id: int,
+        agent_slug: str,
         is_internal_user: bool,
         internal_user_id: str | None,
         for_update: bool = False,
@@ -87,6 +90,7 @@ class UserTokenRepository:
         statement = select(UserToken).where(
             UserToken.user_id == user_id,
             UserToken.enterprise_id == enterprise_id,
+            UserToken.agent_slug == agent_slug,
             UserToken.is_internal_user == is_internal_user,
             UserToken.internal_user_id == internal_user_id,
             UserToken.is_active.is_(True),
@@ -101,6 +105,7 @@ class UserTokenRepository:
         *,
         user_id: int,
         enterprise_id: int,
+        agent_slug: str,
         is_internal_user: bool,
         internal_user_id: str | None,
         for_update: bool = False,
@@ -108,6 +113,7 @@ class UserTokenRepository:
         row = await self.get_owned(
             user_id=user_id,
             enterprise_id=enterprise_id,
+            agent_slug=agent_slug,
             is_internal_user=is_internal_user,
             internal_user_id=internal_user_id,
             for_update=for_update,
@@ -118,6 +124,7 @@ class UserTokenRepository:
                     return await self.create(
                         user_id=user_id,
                         enterprise_id=enterprise_id,
+                        agent_slug=agent_slug,
                         is_internal_user=is_internal_user,
                         internal_user_id=internal_user_id,
                     )
@@ -125,6 +132,7 @@ class UserTokenRepository:
                 row = await self.get_owned(
                     user_id=user_id,
                     enterprise_id=enterprise_id,
+                    agent_slug=agent_slug,
                     is_internal_user=is_internal_user,
                     internal_user_id=internal_user_id,
                     for_update=for_update,
@@ -137,6 +145,7 @@ class UserTokenRepository:
         self,
         user_id: int,
         enterprise_id: int,
+        agent_slug: str,
         is_internal_user: bool,
         internal_user_id: str | None,
     ) -> bool:
@@ -144,6 +153,7 @@ class UserTokenRepository:
             select(UserToken.id).where(
                 UserToken.user_id == user_id,
                 UserToken.enterprise_id == enterprise_id,
+                UserToken.agent_slug == agent_slug,
                 UserToken.is_internal_user == is_internal_user,
                 UserToken.internal_user_id == internal_user_id,
                 UserToken.is_active.is_(True),
@@ -161,6 +171,7 @@ class UserTokenRepository:
         *,
         user_id: int,
         enterprise_id: int,
+        agent_slug: str,
         is_internal_user: bool,
         internal_user_id: str | None,
     ) -> bool:
@@ -173,6 +184,7 @@ class UserTokenRepository:
         row = await self.get_or_create(
             user_id=user_id,
             enterprise_id=enterprise_id,
+            agent_slug=agent_slug,
             is_internal_user=is_internal_user,
             internal_user_id=internal_user_id,
             for_update=True,
@@ -191,6 +203,7 @@ class UserTokenRepository:
         *,
         user_id: int,
         enterprise_id: int,
+        agent_slug: str,
         is_internal_user: bool,
         internal_user_id: str | None,
         input_tokens: int = 0,
@@ -210,6 +223,7 @@ class UserTokenRepository:
         row = await self.get_or_create(
             user_id=user_id,
             enterprise_id=enterprise_id,
+            agent_slug=agent_slug,
             is_internal_user=is_internal_user,
             internal_user_id=internal_user_id,
             for_update=True,
@@ -256,6 +270,7 @@ class UserTokenRepository:
         return await self.create(
             user_id=row.user_id,
             enterprise_id=row.enterprise_id,
+            agent_slug=row.agent_slug,
             is_internal_user=row.is_internal_user,
             internal_user_id=row.internal_user_id,
             now=now,
@@ -268,12 +283,14 @@ class UserTokenRepository:
         *,
         enterprise_id: int,
         user_id: int,
+        agent_slug: str,
         is_internal_user: bool,
         internal_user_id: str | None,
     ) -> UserToken:
         row = await self.get_or_create(
             user_id=user_id,
             enterprise_id=enterprise_id,
+            agent_slug=agent_slug,
             is_internal_user=is_internal_user,
             internal_user_id=internal_user_id,
             for_update=True,

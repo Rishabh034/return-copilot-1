@@ -72,22 +72,29 @@ class BudgetRepository:
     # --- lifecycle -----------------------------------------------------------
 
     async def get(
-        self, *, enterprise_id: int, period_start: date
+        self, *, enterprise_id: int, agent_slug: str, period_start: date
     ) -> EnterpriseBudget | None:
         result = await self._session.execute(
             select(EnterpriseBudget).where(
                 EnterpriseBudget.enterprise_id == enterprise_id,
+                EnterpriseBudget.agent_slug == agent_slug,
                 EnterpriseBudget.period_start == period_start,
             )
         )
         return result.scalar_one_or_none()
 
     async def create(
-        self, *, enterprise_id: int, period_start: date, period_end: date
+        self,
+        *,
+        enterprise_id: int,
+        agent_slug: str,
+        period_start: date,
+        period_end: date,
     ) -> EnterpriseBudget:
         row = EnterpriseBudget(
             id=uuid.uuid4(),
             enterprise_id=enterprise_id,
+            agent_slug=agent_slug,
             period_start=period_start,
             period_end=period_end,
             limit_micros=settings.budget_default_limit_micros,
@@ -100,17 +107,19 @@ class BudgetRepository:
         return row
 
     async def get_or_create(
-        self, *, enterprise_id: int, now: datetime | None = None
+        self, *, enterprise_id: int, agent_slug: str, now: datetime | None = None
     ) -> EnterpriseBudget:
         """Fetch this period's row, creating it on first use.
 
         Two requests can reach this at the same instant on the first turn of a
-        month. The unique index on (enterprise_id, period_start) settles it: the
-        loser takes an IntegrityError inside a savepoint, rolls back only that,
-        and re-reads the winner's row.
+        month. The unique index on (enterprise_id, period_start, agent_slug)
+        settles it: the loser takes an IntegrityError inside a savepoint, rolls
+        back only that, and re-reads the winner's row.
         """
         period_start, period_end = period_bounds(now)
-        row = await self.get(enterprise_id=enterprise_id, period_start=period_start)
+        row = await self.get(
+            enterprise_id=enterprise_id, agent_slug=agent_slug, period_start=period_start
+        )
         if row is not None:
             return row
 
@@ -118,11 +127,14 @@ class BudgetRepository:
             async with self._session.begin_nested():
                 return await self.create(
                     enterprise_id=enterprise_id,
+                    agent_slug=agent_slug,
                     period_start=period_start,
                     period_end=period_end,
                 )
         except IntegrityError:
-            row = await self.get(enterprise_id=enterprise_id, period_start=period_start)
+            row = await self.get(
+                enterprise_id=enterprise_id, agent_slug=agent_slug, period_start=period_start
+            )
             if row is None:
                 raise
             return row
@@ -133,6 +145,7 @@ class BudgetRepository:
         self,
         *,
         enterprise_id: int,
+        agent_slug: str,
         estimate_micros: int | None = None,
         now: datetime | None = None,
     ) -> BudgetState:
@@ -147,12 +160,15 @@ class BudgetRepository:
             if estimate_micros is None
             else estimate_micros
         )
-        row = await self.get_or_create(enterprise_id=enterprise_id, now=now)
+        row = await self.get_or_create(
+            enterprise_id=enterprise_id, agent_slug=agent_slug, now=now
+        )
 
         result = await self._session.execute(
             update(EnterpriseBudget)
             .where(
                 EnterpriseBudget.enterprise_id == enterprise_id,
+                EnterpriseBudget.agent_slug == agent_slug,
                 EnterpriseBudget.period_start == row.period_start,
                 or_(
                     EnterpriseBudget.enforcement_enabled.is_(False),
@@ -207,6 +223,7 @@ class BudgetRepository:
         self,
         *,
         enterprise_id: int,
+        agent_slug: str,
         period_start: date,
         estimate_micros: int,
         actual_micros: int,
@@ -221,6 +238,7 @@ class BudgetRepository:
             update(EnterpriseBudget)
             .where(
                 EnterpriseBudget.enterprise_id == enterprise_id,
+                EnterpriseBudget.agent_slug == agent_slug,
                 EnterpriseBudget.period_start == period_start,
             )
             .values(
@@ -233,13 +251,19 @@ class BudgetRepository:
         )
 
     async def release(
-        self, *, enterprise_id: int, period_start: date, estimate_micros: int
+        self,
+        *,
+        enterprise_id: int,
+        agent_slug: str,
+        period_start: date,
+        estimate_micros: int,
     ) -> None:
         """Drop the hold without charging — the turn produced nothing."""
         await self._session.execute(
             update(EnterpriseBudget)
             .where(
                 EnterpriseBudget.enterprise_id == enterprise_id,
+                EnterpriseBudget.agent_slug == agent_slug,
                 EnterpriseBudget.period_start == period_start,
             )
             .values(

@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, Index, Integer
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Index, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -33,10 +33,14 @@ class EnterpriseBudget(Base):
 
     __tablename__ = "enterprise_budget"
     __table_args__ = (
+        # Agent-scoped: each agent gets its own cap for the period rather than
+        # sharing one pool, since a different agent means a different UI with
+        # its own traffic pattern and no reason to throttle on another's spend.
         Index(
             "uq_enterprise_budget_period",
             "enterprise_id",
             "period_start",
+            "agent_slug",
             unique=True,
         ),
     )
@@ -45,13 +49,15 @@ class EnterpriseBudget(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     enterprise_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    agent_slug: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True, server_default="allocation"
+    )
 
     # Calendar month: period_start is the 1st, period_end the 1st of the next
     # month (exclusive). Stored rather than derived so a future change to the
     # period length cannot silently reinterpret existing rows.
     period_start: Mapped[date] = mapped_column(Date, nullable=False)
     period_end: Mapped[date] = mapped_column(Date, nullable=False)
-
     limit_micros: Mapped[int] = mapped_column(BigInteger, nullable=False)
     spent_micros: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=0, server_default="0"

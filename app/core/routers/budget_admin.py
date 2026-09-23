@@ -43,6 +43,11 @@ logger = logging.getLogger(__name__)
 # the bar to manager.
 router = APIRouter(dependencies=[Depends(require_clickpost_staff)])
 
+# The agent that existed before budgets were split per agent. Endpoints below
+# that target one enterprise's budget row default to it so an existing caller
+# that knows nothing about agents keeps hitting the row it always has.
+_DEFAULT_AGENT_SLUG = "allocation"
+
 
 def _window(frm: date | None, to: date | None) -> tuple[datetime, datetime]:
     """Resolve the date filter every read endpoint shares.
@@ -82,9 +87,16 @@ async def pressure(
         None,
         description="First day of the period, e.g. 2026-08-01. Defaults to the current month.",
     ),
+    agent_slug: str | None = Query(
+        None,
+        description="Narrow to one agent's budget rows. Omit to see every agent's.",
+    ),
     session: AsyncSession = Depends(get_db),
 ):
-    """Enterprises ranked by share of cap consumed, with a run-rate projection.
+    """Budget rows ranked by share of cap consumed, with a run-rate projection.
+
+    One row per (enterprise, agent) — each agent has its own cap, so an
+    enterprise running two agents appears twice.
 
     `projected_over` is the actionable field — it names who will breach before
     they do, rather than reporting it afterwards.
@@ -94,7 +106,7 @@ async def pressure(
     """
     resolved = period_start or period_bounds()[0]
     rows = await BudgetAnalyticsRepository(session).pressure(
-        limit=limit, period_start=resolved
+        limit=limit, period_start=resolved, agent_slug=agent_slug
     )
     return PressureResponse(period_start=resolved, enterprises=rows)
 
@@ -152,6 +164,10 @@ async def enterprise_detail(
     enterprise_id: int,
     frm: date | None = Query(None, alias="from"),
     to: date | None = None,
+    agent_slug: str = Query(
+        _DEFAULT_AGENT_SLUG,
+        description="Which agent's budget row to show. Defaults to the original agent.",
+    ),
     session: AsyncSession = Depends(get_db),
 ):
     """One enterprise: budget state, spend per user, daily series, top conversations."""
@@ -161,13 +177,18 @@ async def enterprise_detail(
 
     matches = [
         e
-        for e in await repo.pressure(limit=500, period_start=period_start)
+        for e in await repo.pressure(
+            limit=500, period_start=period_start, agent_slug=agent_slug
+        )
         if e["enterprise_id"] == enterprise_id
     ]
     if not matches:
         raise HTTPException(
             status_code=404,
-            detail=f"No budget row for enterprise {enterprise_id} in the current period.",
+            detail=(
+                f"No budget row for enterprise {enterprise_id}, agent "
+                f"{agent_slug!r}, in the current period."
+            ),
         )
 
     return EnterpriseDetailResponse(
@@ -232,6 +253,10 @@ async def audit_trail(
 async def set_enterprise_config(
     enterprise_id: int,
     body: EnterpriseConfigRequest,
+    agent_slug: str = Query(
+        _DEFAULT_AGENT_SLUG,
+        description="Which agent's budget row to change. Defaults to the original agent.",
+    ),
     caller: AuthContext = Depends(require_clickpost_admin),
     session: AsyncSession = Depends(get_db),
 ):
@@ -267,7 +292,9 @@ async def set_enterprise_config(
     # only half the story without what it was.
     existing = [
         e
-        for e in await repo.pressure(limit=1000, period_start=period_start)
+        for e in await repo.pressure(
+            limit=1000, period_start=period_start, agent_slug=agent_slug
+        )
         if e["enterprise_id"] == enterprise_id
     ]
     before = (
@@ -281,6 +308,7 @@ async def set_enterprise_config(
 
     row = await repo.set_enterprise_config(
         enterprise_id=enterprise_id,
+        agent_slug=agent_slug,
         period_start=period_start,
         limit_micros=body.limit_micros,
         enforcement_enabled=body.enforcement_enabled,
@@ -289,8 +317,9 @@ async def set_enterprise_config(
         raise HTTPException(
             status_code=404,
             detail=(
-                f"No budget row for enterprise {enterprise_id} in the current period. "
-                f"It is created on their first turn of the month."
+                f"No budget row for enterprise {enterprise_id}, agent "
+                f"{agent_slug!r}, in the current period. It is created on "
+                f"their first turn of the month."
             ),
         )
     # Same transaction as the change, so a write cannot land without its trail.
@@ -313,8 +342,10 @@ async def set_enterprise_config(
     await session.commit()
 
     logger.info(
-        "Budget config changed enterprise_id=%s by=%s/%s limit_micros=%s enforcement=%s",
+        "Budget config changed enterprise_id=%s agent_slug=%s by=%s/%s "
+        "limit_micros=%s enforcement=%s",
         enterprise_id,
+        agent_slug,
         caller.user_id,
         caller.internal_user_id,
         body.limit_micros,
@@ -322,6 +353,7 @@ async def set_enterprise_config(
     )
     return {
         "enterprise_id": row.enterprise_id,
+        "agent_slug": row.agent_slug,
         "period_start": row.period_start,
         "limit_micros": row.limit_micros,
         "limit_usd": round(row.limit_micros / 1_000_000, 2),

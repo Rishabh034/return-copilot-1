@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from app.db import AsyncSessionLocal
 from app.core.auth.agent_token import resolve_identity
+from app.core.request_spec import agent_spec
 from app.exceptions import BadRequestError
 
 from app.core.auth.actor  import(
@@ -39,6 +40,7 @@ async def claim_extra_tokens(
     identity:tuple[int, int, str] = Depends(_resolve_identity),
 ):
     user_id,enterprise_id,token = identity
+    agent_slug = agent_spec(request).slug
     is_internal_user = resolve_is_internal_user(body.is_internal_user)
     internal_user_id = resolve_internal_user_id(body.internal_user_id)
     
@@ -63,6 +65,7 @@ async def claim_extra_tokens(
             row = await token_repo.add_extra_tokens(
                 enterprise_id=enterprise_id,
                 user_id=user_id,
+                agent_slug=agent_slug,
                 is_internal_user=is_internal_user,
                 internal_user_id=internal_user_id
             )

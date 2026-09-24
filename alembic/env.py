@@ -14,7 +14,7 @@ from app.db import Base
 
 # Import models so they register themselves with Base.metadata.
 # Alembic's autogenerate reads Base.metadata to know which tables exist.
-import app.rr_log_analyst.models  # noqa: F401
+import app.core.models  # noqa: F401
 
 config = context.config
 

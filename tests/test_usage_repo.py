@@ -20,8 +20,8 @@ import pytest
 from sqlalchemy import delete
 
 from app.db import AsyncSessionLocal, engine
-from app.rr_log_analyst.models.usage_ledger import LlmUsageLedger
-from app.rr_log_analyst.repositories.usage_repo import UsageRepository, period_window
+from app.core.billing.usage_ledger_model import LlmUsageLedger
+from app.core.billing.usage_repo import UsageRepository, period_window
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_DB_TESTS") != "1",
@@ -461,20 +461,20 @@ class TestResolvePeriod:
     """`period_start` accepts any date inside the month and snaps to it."""
 
     def test_snaps_any_date_in_the_month_to_its_start(self):
-        from app.rr_log_analyst.routers.usage import _resolve_period
+        from app.core.routers.usage import _resolve_period
 
         assert _resolve_period(date(2026, 8, 14)) == (date(2026, 8, 1), date(2026, 9, 1))
         assert _resolve_period(date(2026, 8, 1)) == (date(2026, 8, 1), date(2026, 9, 1))
         assert _resolve_period(date(2026, 8, 31)) == (date(2026, 8, 1), date(2026, 9, 1))
 
     def test_december_rolls_into_the_next_year(self):
-        from app.rr_log_analyst.routers.usage import _resolve_period
+        from app.core.routers.usage import _resolve_period
 
         assert _resolve_period(date(2026, 12, 9)) == (date(2026, 12, 1), date(2027, 1, 1))
 
     def test_none_means_the_current_period(self):
-        from app.rr_log_analyst.repositories.budget_repo import period_bounds
-        from app.rr_log_analyst.routers.usage import _resolve_period
+        from app.core.billing.budget_repo import period_bounds
+        from app.core.routers.usage import _resolve_period
 
         assert _resolve_period(None) == period_bounds()
 
@@ -485,7 +485,7 @@ class TestAdminAttributesEachStaffMember:
     anonymous row and the attribution internal_user_id exists for was lost."""
 
     def test_two_staff_on_one_account_are_two_rows(self):
-        from app.rr_log_analyst.repositories.budget_analytics_repo import (
+        from app.core.billing.budget_analytics_repo import (
             BudgetAnalyticsRepository,
         )
 
@@ -509,7 +509,7 @@ class TestAdminAttributesEachStaffMember:
         assert staff == {"304875": 5_000, "1013124": 7_000}, staff
 
     def test_a_customer_row_carries_no_internal_user_id(self):
-        from app.rr_log_analyst.repositories.budget_analytics_repo import (
+        from app.core.billing.budget_analytics_repo import (
             BudgetAnalyticsRepository,
         )
 

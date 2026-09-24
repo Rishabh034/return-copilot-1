@@ -24,7 +24,7 @@ import asyncio
 import os
 
 import pytest
-from app.dependencies.auth import AgentAuthError
+from app.core.auth.agent_token import AgentAuthError
 
 RUN_DB_TESTS = os.environ.get("RUN_DB_TESTS") == "1"
 pytestmark = pytest.mark.skipif(
@@ -36,9 +36,9 @@ if RUN_DB_TESTS:
     from sqlalchemy import delete
 
     from app.db import AsyncSessionLocal, engine
-    from app.rr_log_analyst.models.admin_audit_log import AdminAuditLog
-    from app.rr_log_analyst.models.agent_admin import AgentAdmin
-    from app.rr_log_analyst.repositories.admin_repo import AgentAdminRepository
+    from app.core.admin.admin_audit_log_model import AdminAuditLog
+    from app.core.admin.agent_admin_model import AgentAdmin
+    from app.core.admin.admin_repo import AgentAdminRepository
 
 ADMIN = 999_100_001
 OTHER = 999_100_002
@@ -180,7 +180,7 @@ def test_admin_endpoints_refuse_when_jwt_verification_is_off():
     and unacceptable for "may this person read every customer's spend".
     """
     from app.config import settings
-    from app.dependencies.admin import require_clickpost_admin
+    from app.core.auth.admin import require_clickpost_admin
 
     original = settings.agent_jwt_enabled
     settings.agent_jwt_enabled = False
@@ -360,7 +360,7 @@ def test_a_specific_grant_outranks_a_blanket_one():
 
 def test_grant_defaults_to_the_smaller_privilege():
     """A grant made without thinking about it should be the safe one."""
-    from app.rr_log_analyst.schemas.admin import GrantAdminRequest
+    from app.core.admin.admin_schema import GrantAdminRequest
 
     assert GrantAdminRequest(user_id=1).role == "viewer"
 
@@ -403,8 +403,8 @@ def test_staff_claim_never_grants_write_access(monkeypatch):
     what matters, and a docstring mentioning is_staff is not a bug.
     """
     from app.config import settings
-    from app.dependencies import admin as admin_module
-    from app.dependencies.auth import AgentAuthError, AuthContext
+    from app.core.auth import admin as admin_module
+    from app.core.auth.agent_token import AgentAuthError, AuthContext
 
     staff_ctx = AuthContext(
         user_id=OUTSIDER, enterprise_id=15, cp_token="x",
@@ -447,8 +447,8 @@ def test_audit_records_the_person_not_the_shared_account():
     Without `actor_internal_user_id` every entry reads "changed by 14" and the
     trail answers nothing.
     """
-    from app.rr_log_analyst.models.admin_audit_log import AdminAuditLog
-    from app.rr_log_analyst.repositories.audit_repo import AuditRepository
+    from app.core.admin.admin_audit_log_model import AdminAuditLog
+    from app.core.admin.audit_repo import AuditRepository
 
     async def go():
         async with AsyncSessionLocal() as s:
@@ -472,8 +472,8 @@ def test_audit_records_the_person_not_the_shared_account():
 
 
 def test_audit_can_be_filtered_by_who_did_it():
-    from app.rr_log_analyst.models.admin_audit_log import AdminAuditLog
-    from app.rr_log_analyst.repositories.audit_repo import AuditRepository
+    from app.core.admin.admin_audit_log_model import AdminAuditLog
+    from app.core.admin.audit_repo import AuditRepository
 
     async def go():
         async with AsyncSessionLocal() as s:
@@ -493,8 +493,8 @@ def test_audit_can_be_filtered_by_who_did_it():
 
 
 def test_audit_is_newest_first():
-    from app.rr_log_analyst.models.admin_audit_log import AdminAuditLog
-    from app.rr_log_analyst.repositories.audit_repo import AuditRepository
+    from app.core.admin.admin_audit_log_model import AdminAuditLog
+    from app.core.admin.audit_repo import AuditRepository
 
     async def go():
         async with AsyncSessionLocal() as s:

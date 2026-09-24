@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import asyncio
 
-from app.rr_log_analyst.agent.context import merge_usage
-from app.rr_log_analyst.services import title as title_service
+from app.core.runtime.context import merge_usage
+from app.core.conversations import title as title_service
 
 USAGE = {
     "input_tokens": 612,

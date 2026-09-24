@@ -13,9 +13,9 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
-from app.dependencies.auth import AuthContext
+from app.core.auth.agent_token import AuthContext
 from app.exceptions import BadRequestError
-from app.rr_log_analyst.auth import (
+from app.core.auth.actor import (
     resolve_body_internal_actor,
     resolve_internal_actor,
 )

@@ -1,6 +1,6 @@
 """Slack alerting for backend problems that need a human.
 
-Separate from app/rr_log_analyst/memory/slack_notifier.py, which posts user
+Separate from app/core/conversations/slack_notifier.py, which posts user
 feedback to a different channel. Synchronous (uses `requests`); call via
 `asyncio.to_thread` from async code so it never blocks the event loop.
 """

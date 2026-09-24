@@ -14,7 +14,7 @@ Everything here is integer arithmetic on purpose. Money is never a float.
 
 import pytest
 
-from app.rr_log_analyst.services.pricing import (
+from app.core.billing.pricing import (
     MICROS_PER_DOLLAR,
     MODEL_RATES,
     UnknownModelError,

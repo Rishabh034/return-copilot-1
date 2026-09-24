@@ -57,6 +57,7 @@ async def _resolve_identity_query(
 @router.post("/", response_model=ConversationCreateResponse)
 async def create_conversation(
     body: ConversationCreateRequest,
+    request: Request,
     identity: tuple[int, int, str] = Depends(_resolve_identity_body),
     session: AsyncSession = Depends(get_db),
 ):
@@ -73,7 +74,14 @@ async def create_conversation(
         
     repo = ConversationRepository(session)
     
-    conversation = await repo.create(user_id=user_id, enterprise_id=enterprise_id, internal_user_id=internal_user_id, is_internal_user=is_internal_user)
+    conversation = await repo.create(
+        user_id=user_id,
+        enterprise_id=enterprise_id,
+        internal_user_id=internal_user_id,
+        is_internal_user=is_internal_user,
+        # Same source as every other stamp: the mount this request arrived on.
+        agent_slug=agent_spec(request).slug,
+    )
     await session.commit()
     return ConversationCreateResponse(
         id=str(conversation.id),

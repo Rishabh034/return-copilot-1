@@ -54,6 +54,13 @@ settings.README_CATEGORY_URI = None
 settings.README_PARENT_SLUG = None
 settings.README_PUBLISH_HIDDEN = True
 settings.README_PUBLISH_ENABLED = True
+# The API_KEYS secret carries no CLICKPOST_REPO_PATH, so in PROD the setting was
+# never set and the onboarding README consumer crashed locating the checkout.
+# Fall back to where the monolith lives on the consumer host; a value from the
+# secret or from .env still wins.
+settings.CLICKPOST_REPO_PATH = (
+    getattr(settings, "CLICKPOST_REPO_PATH", None) or "/home/ubuntu/clickpost"
+)
 # clean up temp names so they don't leak into `from myconfig.settings import *`
 del _secrets, _key, _value
 

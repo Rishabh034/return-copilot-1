@@ -177,7 +177,9 @@ def trim_messages_to_budget(
         return messages
 
     protected_head = annotated[:1]
-    protected_tail = annotated[-tail_count:]
+    # `annotated[-0:]` is the whole list, not an empty one, so a tail of zero
+    # would protect every message and duplicate the conversation.
+    protected_tail = annotated[-tail_count:] if tail_count else []
     trimmable = annotated[1:-tail_count] if tail_count else annotated[1:]
 
     protected_cost = sum(cost for _, cost in protected_head + protected_tail)

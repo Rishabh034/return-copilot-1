@@ -310,6 +310,52 @@ class TestActiveUsers:
 
         assert run(go) == 2
 
+    def test_support_is_counted_here_but_excluded_from_the_spend_beside_it(self):
+        """PINNED AS OBSERVED, not asserted as correct.
+
+        `GET /enterprise` returns both of these numbers in one payload, and
+        they disagree about ClickPost support. `for_enterprise` defaults to
+        `counted_only=True` and leaves support out, because — in its own words
+        — including it "would show a customer spend they are not paying for
+        and cannot explain". `active_users` has no such filter, so the same
+        response can tell a four-seat customer that five people were active
+        while showing spend for four.
+
+        Whether that is a bug is a product question nobody has answered yet,
+        so this records today's behaviour rather than blessing it. If you are
+        reading this because you just made it fail, you have probably fixed
+        the inconsistency on purpose: update this test, don't work around it.
+        """
+
+        async def go():
+            await _wipe()
+            await _add(user_id=500, cost=1_000)
+            await _add(user_id=501, cost=1_000)
+            await _add(
+                user_id=14,
+                internal_user_id="support",
+                is_internal_user=True,
+                counted=False,
+                cost=9_000,
+            )
+            async with AsyncSessionLocal() as s:
+                repo = UsageRepository(s)
+                active = await repo.active_users(
+                    enterprise_id=ENT,
+                    period_start=PERIOD_START,
+                    period_end=PERIOD_END,
+                )
+                totals = await repo.for_enterprise(
+                    enterprise_id=ENT,
+                    period_start=PERIOD_START,
+                    period_end=PERIOD_END,
+                )
+                return active, totals.cost_micros
+
+        active, cost = run(go)
+        assert active == 3, "support counts as an active user"
+        assert cost == 2_000, "but its spend is excluded from the figure beside it"
+
 
 class TestMembers:
     def test_excludes_clickpost_support_from_the_team_list(self):
@@ -527,3 +573,90 @@ class TestAdminAttributesEachStaffMember:
         assert len(rows) == 1
         assert rows[0]["internal_user_id"] is None
         assert rows[0]["is_internal_user"] is False
+
+
+class TestExport:
+    """`export_rows` streams the CSV behind GET /enterprise/export.csv.
+
+    Deliberately the one read here with no `is_internal_user` filter. It is a
+    reconciliation dump rather than a display: the CSV carries
+    `is_internal_user` and `counted_against_pool` as columns precisely so the
+    reader can tell charged rows from uncharged ones, and dropping rows would
+    stop the file reconciling against the ledger. The aggregates elsewhere in
+    this module filter because they are summaries a customer reads directly.
+    """
+
+    @staticmethod
+    async def _export(*, enterprise_id=ENT, start=PERIOD_START, end=PERIOD_END):
+        async with AsyncSessionLocal() as s:
+            return [
+                row
+                async for row in UsageRepository(s).export_rows(
+                    enterprise_id=enterprise_id,
+                    period_start=start,
+                    period_end=end,
+                )
+            ]
+
+    def test_the_export_is_complete_where_the_summaries_are_filtered(self):
+        """Support rows belong in the file, flagged rather than omitted."""
+
+        async def go():
+            await _wipe()
+            await _add(user_id=500, cost=1_000)
+            await _add(
+                user_id=14,
+                internal_user_id="support",
+                is_internal_user=True,
+                counted=False,
+                cost=9_000,
+            )
+            return await TestExport._export()
+
+        rows = run(go)
+        assert len(rows) == 2, "a filtered export would not reconcile with the ledger"
+        flags = {(r.is_internal_user, r.counted_against_pool) for r in rows}
+        assert flags == {(False, True), (True, False)}, (
+            "the flag columns are what make including the support row safe"
+        )
+
+    def test_the_export_never_crosses_enterprises(self):
+        async def go():
+            await _wipe()
+            await _add(enterprise_id=ENT, cost=1_000)
+            await _add(enterprise_id=OTHER_ENT, cost=5_000)
+            return await TestExport._export()
+
+        rows = run(go)
+        assert [r.cost_micros for r in rows] == [1_000]
+
+    def test_the_export_window_is_half_open(self):
+        """A row created exactly at `period_end` belongs to the next file.
+
+        Getting this wrong bills the same turn in two months' exports.
+        """
+
+        async def go():
+            await _wipe()
+            await _add(when=datetime(2026, 2, 28, 23, 59, tzinfo=timezone.utc), cost=1)
+            await _add(when=datetime(2026, 3, 1, 0, 0, tzinfo=timezone.utc), cost=2)
+            await _add(when=datetime(2026, 4, 1, 0, 0, tzinfo=timezone.utc), cost=3)
+            return await TestExport._export()
+
+        assert {r.cost_micros for r in run(go)} == {2}
+
+    def test_the_export_is_ordered_oldest_first(self):
+        """The file is streamed, so its order is whatever the query gives.
+
+        A CSV that reconciles has to read chronologically.
+        """
+
+        async def go():
+            await _wipe()
+            for day, cost in ((20, 3), (5, 1), (12, 2)):
+                await _add(
+                    when=datetime(2026, 3, day, 12, 0, tzinfo=timezone.utc), cost=cost
+                )
+            return await TestExport._export()
+
+        assert [r.cost_micros for r in run(go)] == [1, 2, 3]

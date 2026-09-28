@@ -155,6 +155,15 @@ class Settings(BaseSettings):
     langfuse_secret_key: str | None = None
     langfuse_base_url: str = "http://10.100.41.62:3000"
 
+    # Distributed tracing via OpenTelemetry (app/clients/observability.py),
+    # exported over OTLP/gRPC to a collector (SigNoz): FastAPI request spans,
+    # with httpx (ClickpostClient), SQLAlchemy query, and raw Anthropic SDK
+    # (LLM call) spans nested underneath. Off by default so local dev without
+    # a collector running is unaffected.
+    otel_enabled: bool = False
+    otel_service_name: str = "clickpost-ai-projects"
+    otel_exporter_otlp_endpoint: str = "http://localhost:4317"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 

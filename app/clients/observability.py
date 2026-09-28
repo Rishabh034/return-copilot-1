@@ -1,33 +1,71 @@
 """
-Wires this app's LLM calls up to self-hosted Langfuse for tracing.
+Wires this app's LLM calls up to self-hosted Langfuse, and its HTTP/LLM/DB
+calls up to OpenTelemetry (headed to SigNoz), for tracing.
 
 Every LLM call in the API process goes through LangChain's ChatAnthropic
 (main agent, scratchpad, and title), so the LangChain CallbackHandler alone
-captures all of them. We deliberately do NOT enable the global OTEL
-AnthropicInstrumentor here: ChatAnthropic calls the `anthropic` SDK under the
-hood, so instrumenting it would trace every call twice (a `ChatAnthropic`
-observation from the callback AND an `anthropic.chat` observation from OTEL)
-and double-count cost on the parent span. The only raw-SDK caller,
+already captures all of them for Langfuse. init_otel() below additionally
+enables the global OTEL AnthropicInstrumentor so the same calls show up as
+spans for SigNoz — but ChatAnthropic calls the `anthropic` SDK under the
+hood, so both wrap the same call. Langfuse's default span filter exports
+spans from *any* known LLM instrumentation library (including this one) in
+addition to its own callback-created spans, so left unfiltered this would
+trace every call twice in Langfuse too (a `ChatAnthropic` observation from
+the callback AND an `anthropic.chat` observation from OTEL) and double-count
+cost on the parent span. `_is_langfuse_export_span` below blocks just that
+scope from Langfuse's export while leaving it on the shared TracerProvider
+for our own OTLP exporter to pick up. The only other raw-SDK caller,
 app/agenticintegrations/client.py, runs in a separate consumer process that
-never calls init_langfuse(); if that path ever needs tracing, instrument it
-there rather than globally here.
+never calls init_langfuse(), so it never faces this conflict.
 
-No-ops entirely when `settings.langfuse_enabled` is false, so this is safe to
-call unconditionally at startup.
+Langfuse's SDK is itself OTEL-based: it claims the global TracerProvider (via
+`opentelemetry.trace.set_tracer_provider`, which only succeeds once) on
+whichever of init_otel()/init_langfuse() runs first, and attaches its own
+export processor to whichever provider is already there otherwise. main.py
+calls init_otel() first so our BatchSpanProcessor+OTLPSpanExporter — and our
+`service.name` resource attribute — end up on the provider that's actually in
+use, regardless of whether Langfuse is enabled. The two stacks then share
+that one TracerProvider: our OTLP exporter ships every span (HTTP request,
+httpx, SQLAlchemy, LLM) to SigNoz, while Langfuse's own processor ships only
+the LLM-shaped ones it's built to display — filtered as described above.
+
+Each half no-ops entirely when its own settings flag (`langfuse_enabled` /
+`otel_enabled`) is false, so both are safe to call unconditionally at
+startup.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from contextlib import ExitStack, contextmanager
-from typing import Any
+import uuid
+from contextlib import ExitStack, contextmanager, nullcontext
+from typing import TYPE_CHECKING, Any
 
 from app.config import settings
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
+    from opentelemetry.sdk._logs import LoggerProvider
+    from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 
 logger = logging.getLogger(__name__)
 
 _langchain_handler_cls: type | None = None
+_tracer_provider: "TracerProvider | None" = None
+_logger_provider: "LoggerProvider | None" = None
+
+# opentelemetry-instrumentation-anthropic's scope name — see module docstring.
+_BLOCKED_LANGFUSE_SCOPES = frozenset({"opentelemetry.instrumentation.anthropic"})
+
+
+def _is_langfuse_export_span(span: "ReadableSpan") -> bool:
+    from langfuse.span_filter import is_default_export_span
+
+    return is_default_export_span(span) and (
+        span.instrumentation_scope is None
+        or span.instrumentation_scope.name not in _BLOCKED_LANGFUSE_SCOPES
+    )
 
 
 def init_langfuse() -> None:
@@ -48,13 +86,22 @@ def init_langfuse() -> None:
     os.environ.setdefault("LANGFUSE_SECRET_KEY", settings.langfuse_secret_key)
     os.environ.setdefault("LANGFUSE_BASE_URL", settings.langfuse_base_url)
 
-    from langfuse import get_client
+    from langfuse import Langfuse
     from langfuse.langchain import CallbackHandler
 
     global _langchain_handler_cls
     _langchain_handler_cls = CallbackHandler
 
-    client = get_client()
+    # Explicit kwargs (rather than get_client(), which reads only from env/
+    # the default constructor) so we can pass should_export_span - see module
+    # docstring. Later get_client() calls (shutdown_langfuse, trace_span)
+    # still resolve to this same singleton.
+    client = Langfuse(
+        public_key=settings.langfuse_public_key,
+        secret_key=settings.langfuse_secret_key,
+        host=settings.langfuse_base_url,
+        should_export_span=_is_langfuse_export_span,
+    )
 
     try:
         if client.auth_check():
@@ -79,6 +126,213 @@ def shutdown_langfuse() -> None:
     from langfuse import get_client
 
     get_client().flush()
+
+
+def init_otel() -> None:
+    """Call once at process startup, before instrument_fastapi_app's wrapped
+    app handles any requests and before any httpx/DB/Anthropic call is made.
+
+    No-ops entirely when `settings.otel_enabled` is false, so this is safe to
+    call unconditionally at startup, same as init_langfuse(). Exports to
+    `settings.otel_exporter_otlp_endpoint` over OTLP/gRPC, then instruments
+    httpx (ClickpostClient), SQLAlchemy (app/db.py) and the raw Anthropic SDK
+    (LangChain's ChatAnthropic, and app/agenticintegrations/client.py) so
+    their calls become child spans of whatever span is active when they're
+    made — the inbound HTTP span from instrument_fastapi_app, most often.
+
+    Also attaches a logging.Handler to the root logger (app/logging_config.py
+    already runs by the time this is called) so every log record this process
+    emits - not just its trace_id/span_id, the actual message - ships to
+    SigNoz's Logs signal too, tagged with whatever span was active when it was
+    logged. That's what makes "what broke, and what did the app log at that
+    point" answerable from inside SigNoz directly, rather than needing to grep
+    a separate log file by the trace_id app/logging_config.py's filter stamps
+    on each line.
+    """
+    if not settings.otel_enabled:
+        return
+
+    from opentelemetry import trace
+    from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+    from opentelemetry.instrumentation.anthropic import AnthropicInstrumentor
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+    from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+    from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+    from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+    from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+    resource = Resource.create({SERVICE_NAME: settings.otel_service_name})
+
+    global _tracer_provider
+    current_provider = trace.get_tracer_provider()
+    if isinstance(current_provider, TracerProvider):
+        # Something else (Langfuse's SDK, if init_langfuse() ran first)
+        # already claimed the global provider - a second set_tracer_provider
+        # call below would silently no-op (OTEL only allows setting it once)
+        # and leave our exporter attached to a provider nothing reads from.
+        # Share theirs instead of trying to replace it. main.py calls
+        # init_otel() before init_langfuse() precisely to avoid landing in
+        # this branch, but this stays correct if that order ever changes.
+        _tracer_provider = current_provider
+    else:
+        _tracer_provider = TracerProvider(resource=resource)
+        trace.set_tracer_provider(_tracer_provider)
+
+    _tracer_provider.add_span_processor(
+        BatchSpanProcessor(OTLPSpanExporter(endpoint=settings.otel_exporter_otlp_endpoint))
+    )
+
+    HTTPXClientInstrumentor().instrument()
+    AnthropicInstrumentor().instrument()
+
+    # AsyncEngine has no engine-connect events of its own; it delegates to the
+    # sync Engine it wraps, which is what the instrumentor actually listens on.
+    from app.db import engine as _db_engine
+
+    SQLAlchemyInstrumentor().instrument(engine=_db_engine.sync_engine)
+
+    # Logs signal - separate provider/exporter from traces, but LoggingHandler
+    # reads the currently active span (if any) off the very same context traces
+    # use, so a log emitted mid-span arrives in SigNoz pre-tagged with that
+    # span's trace_id/span_id - no extra plumbing needed for the correlation.
+    global _logger_provider
+    _logger_provider = LoggerProvider(resource=resource)
+    _logger_provider.add_log_record_processor(
+        BatchLogRecordProcessor(OTLPLogExporter(endpoint=settings.otel_exporter_otlp_endpoint))
+    )
+    logging.getLogger().addHandler(LoggingHandler(logger_provider=_logger_provider))
+
+    logger.info(
+        "OTEL tracing + logs enabled (service=%s, endpoint=%s)",
+        settings.otel_service_name,
+        settings.otel_exporter_otlp_endpoint,
+    )
+
+
+def instrument_fastapi_app(app: "FastAPI") -> None:
+    """Wrap `app` so every inbound HTTP request gets its own span.
+
+    Must be called once, right after the FastAPI() constructor — before the
+    app handles any requests, but safe to call before init_otel() runs the
+    TracerProvider it resolves is looked up lazily at request time. No-op
+    unless settings.otel_enabled.
+    """
+    if not settings.otel_enabled:
+        return
+
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+    FastAPIInstrumentor.instrument_app(app)
+
+
+def shutdown_otel() -> None:
+    """Flush buffered spans and log records, and shut down cleanly before the
+    process exits."""
+    if _tracer_provider is not None:
+        _tracer_provider.shutdown()
+    if _logger_provider is not None:
+        _logger_provider.shutdown()
+
+
+def _conversation_parent_context(conversation_id: str):
+    """A synthetic remote-parent OTel context whose trace_id is deterministically
+    derived from conversation_id, so every span created under it - across every
+    separate HTTP turn of the same conversation - lands in the same OTel trace.
+    There's no real span behind this parent; it's the same shape OTel already
+    uses for a trace continued from an unistrumented upstream caller, and
+    SigNoz renders the trace with whatever we start under it as the root.
+    """
+    from opentelemetry import trace as otel_trace
+    from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
+
+    try:
+        trace_id = uuid.UUID(conversation_id).int
+    except ValueError:
+        # Not a UUID (shouldn't happen for a conversation_id - defensive only).
+        # A stable 128-bit id still keyed off the same string, so repeated
+        # calls for the same non-UUID id still land in one trace.
+        import hashlib
+
+        trace_id = int.from_bytes(hashlib.sha256(conversation_id.encode()).digest()[:16], "big")
+    trace_id = trace_id or 1  # trace_id/span_id must be non-zero
+    span_id = (trace_id & 0xFFFFFFFFFFFFFFFF) or 1
+
+    fake_parent = SpanContext(
+        trace_id=trace_id,
+        span_id=span_id,
+        is_remote=True,
+        trace_flags=TraceFlags(TraceFlags.SAMPLED),
+    )
+    return otel_trace.set_span_in_context(NonRecordingSpan(fake_parent))
+
+
+@contextmanager
+def _otel_conversation_span(
+    name: str,
+    conversation_id: str,
+    *,
+    tags: list[str] | None = None,
+    metadata: dict[str, str] | None = None,
+):
+    from opentelemetry import trace as otel_trace
+
+    attributes: dict[str, Any] = {"conversation_id": conversation_id}
+    if tags:
+        attributes["tags"] = tags
+    if metadata:
+        attributes.update({f"metadata.{k}": v for k, v in metadata.items()})
+
+    tracer = otel_trace.get_tracer(__name__)
+    with tracer.start_as_current_span(
+        name, context=_conversation_parent_context(conversation_id), attributes=attributes
+    ) as span:
+        yield span
+
+
+def otel_span(name: str, **attributes: Any):
+    """Start a plain OTel span nested under whatever's currently active - most
+    often the conversation's `chat_turn` span from `trace_span` below, so a
+    call like `with otel_span(f"tool:{tool.name}"):` shows up as a child of
+    that conversation's trace, nested as deep as the call site is.
+
+    No-op (returns a null context) when otel is disabled, so callers never
+    need to branch on settings.otel_enabled themselves - same convention as
+    langchain_trace_config().
+    """
+    if not settings.otel_enabled:
+        return nullcontext()
+    return _otel_span(name, **attributes)
+
+
+@contextmanager
+def _otel_span(name: str, **attributes: Any):
+    from opentelemetry import trace as otel_trace
+
+    tracer = otel_trace.get_tracer(__name__)
+    clean_attrs = {k: v for k, v in attributes.items() if v is not None}
+    with tracer.start_as_current_span(name, attributes=clean_attrs) as span:
+        yield span
+
+
+def mark_span_error(span: Any, exc: BaseException, description: str | None = None) -> None:
+    """Record `exc` on `span` and set it to ERROR status - use this for a
+    failure that was already caught and turned into a normal return value
+    (like a tool call's error result), so it still shows up as an errored
+    span instead of looking like an ordinary successful one.
+
+    `span` must be one returned by `otel_span()` above (or None, its
+    disabled-state value, which this no-ops on) - never the Langfuse span
+    `trace_span()` yields, which has a different API (`.update(...)`).
+    """
+    if span is None:
+        return
+    from opentelemetry.trace import Status, StatusCode
+
+    span.record_exception(exc)
+    span.set_status(Status(StatusCode.ERROR, description or str(exc)))
 
 
 def langfuse_identity(
@@ -166,6 +420,14 @@ def trace_span(
 ):
     """Wrap a block of work in a Langfuse span, or a no-op if tracing is disabled.
 
+    Also opens an OTel span for the same block when settings.otel_enabled and
+    session_id are both set, parented to a synthetic per-conversation context
+    (see _conversation_parent_context) so that every trace_span/otel_span call
+    for the same conversation_id - across this turn and every future turn -
+    lands in one OTel trace, with session_id as that trace's conversation_id.
+    This happens independently of whether Langfuse is enabled; the two halves
+    below don't interact.
+
     Any LangChain calls made inside the block (via langchain_trace_config)
     nest under this span automatically. On disabled/uninitialized tracing, or
     on ANY error opening the span (bad SDK call, auth, network), yields None
@@ -174,32 +436,39 @@ def trace_span(
     generators: once headers are sent, an exception here can't be recovered
     from the way a normal error handler would.
     """
-    if _langchain_handler_cls is None:
-        yield None
-        return
+    otel_cm = (
+        _otel_conversation_span(name, session_id, tags=tags, metadata=metadata)
+        if settings.otel_enabled and session_id
+        else nullcontext()
+    )
 
-    from langfuse import get_client, propagate_attributes
+    with otel_cm:
+        if _langchain_handler_cls is None:
+            yield None
+            return
 
-    with ExitStack() as stack:
-        try:
-            span = stack.enter_context(
-                get_client().start_as_current_observation(name=name, **kwargs)
-            )
-            stack.enter_context(
-                propagate_attributes(
-                    user_id=user_id,
-                    session_id=session_id,
-                    tags=tags,
-                    metadata=metadata,
+        from langfuse import get_client, propagate_attributes
+
+        with ExitStack() as stack:
+            try:
+                span = stack.enter_context(
+                    get_client().start_as_current_observation(name=name, **kwargs)
                 )
-            )
-        except Exception:
-            logger.exception("Failed to open Langfuse span %r; continuing untraced", name)
-            span = None
-        # Only span *creation* is guarded above. Anything raised by the
-        # caller's `with trace_span(...)` block itself must propagate
-        # normally here, not be swallowed as if tracing had failed.
-        yield span
+                stack.enter_context(
+                    propagate_attributes(
+                        user_id=user_id,
+                        session_id=session_id,
+                        tags=tags,
+                        metadata=metadata,
+                    )
+                )
+            except Exception:
+                logger.exception("Failed to open Langfuse span %r; continuing untraced", name)
+                span = None
+            # Only span *creation* is guarded above. Anything raised by the
+            # caller's `with trace_span(...)` block itself must propagate
+            # normally here, not be swallowed as if tracing had failed.
+            yield span
 
 
 def langfuse_user_id(

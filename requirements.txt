@@ -44,9 +44,19 @@ PyJWT==2.13.0
 cryptography==46.0.0
 confluent-kafka==2.8.0
 # LLM tracing to self-hosted Langfuse: langfuse.langchain.CallbackHandler for
-# app/clients/llm.py, AnthropicInstrumentor (OTEL) for app/agenticintegrations/client.py
+# app/clients/llm.py. Also OTEL-based itself - see app/clients/observability.py.
 langfuse==4.14.3
+# Distributed tracing (app/clients/observability.py), exported over OTLP/gRPC
+# to SigNoz: FastAPI request spans, with httpx (ClickpostClient), SQLAlchemy
+# query, and raw Anthropic SDK (ChatAnthropic, app/agenticintegrations/client.py)
+# spans nested underneath.
+opentelemetry-api==1.44.0
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-grpc==1.44.0
 opentelemetry-instrumentation-anthropic==0.62.1
+opentelemetry-instrumentation-fastapi==0.65b0
+opentelemetry-instrumentation-httpx==0.65b0
+opentelemetry-instrumentation-sqlalchemy==0.65b0
 # Test runner. tests/ uses plain pytest with asyncio.run() inside sync tests,
 # so pytest-asyncio is deliberately not required.
 pytest==9.1.1

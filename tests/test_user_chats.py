@@ -268,3 +268,90 @@ def test_count_and_list_apply_the_same_filters():
 
     for label, (listed, counted) in run(go()).items():
         assert listed == counted, f"{label}: listing returned {listed}, count said {counted}"
+
+
+# --- paging ------------------------------------------------------------------
+
+
+async def _page(**kwargs):
+    """One page, in the order the listing returns it."""
+    async with AsyncSessionLocal() as s:
+        rows = await UserChats(s).list_chats(enterprise_id=ENTERPRISE_ID, **kwargs)
+        return [r.conversation_id for r in rows]
+
+
+def test_the_listing_is_newest_created_first():
+    """Pinned to what the query does: `created_at desc`.
+
+    `list_chats`'s docstring says "most recently updated first". The two
+    disagree, and a chat that is still being talked in sinks down the list
+    under the current order. If you change the order on purpose, change this.
+    """
+
+    async def go():
+        old = await _chat(created_at=NOW - timedelta(days=2))
+        new = await _chat(created_at=NOW)
+        mid = await _chat(created_at=NOW - timedelta(days=1))
+        return [new, mid, old], await _page()
+
+    expected, listed = run(go())
+    assert listed == expected
+
+
+def test_pages_partition_the_listing_with_no_gaps_or_repeats():
+    """Every chat on exactly one page, and a page past the end is empty.
+
+    Half the chats share one `created_at` on purpose: that is where paging
+    goes wrong, because without the `id` tie-breaker in the ORDER BY Postgres
+    is free to order ties differently per query, and a row can land on two
+    pages and another on none. On a table this small it rarely does, so this
+    does not reliably catch the tie-breaker being removed. Keep the tie-breaker
+    regardless.
+    """
+
+    async def go():
+        ids = set()
+        for i in range(3):
+            ids.add(await _chat(created_at=NOW - timedelta(hours=i + 1)))
+        for _ in range(4):
+            ids.add(await _chat(created_at=NOW))
+        pages = [await _page(limit=2, page=p) for p in (1, 2, 3, 4, 5)]
+        return ids, pages
+
+    ids, pages = run(go())
+    assert [len(p) for p in pages] == [2, 2, 2, 1, 0]
+    seen = [cid for p in pages for cid in p]
+    assert len(seen) == len(set(seen)), "a chat appeared on two pages"
+    assert set(seen) == ids, "a chat appeared on no page"
+
+
+def test_a_page_below_one_is_treated_as_the_first_page():
+    async def go():
+        for i in range(3):
+            await _chat(created_at=NOW - timedelta(hours=i))
+        return await _page(limit=2, page=0), await _page(limit=2, page=1)
+
+    zeroth, first = run(go())
+    assert zeroth == first
+
+
+def test_the_page_size_is_capped():
+    """A client asking for 10,000 rows gets MAX_LIMIT, not the table."""
+    from app.core.conversations.user_chats import MAX_LIMIT
+
+    async def go():
+        for i in range(MAX_LIMIT + 1):
+            await _chat(created_at=NOW - timedelta(minutes=i))
+        return await _page(limit=10_000)
+    assert len(run(go())) == MAX_LIMIT
+
+
+def test_filtering_to_one_customer_seat():
+    async def go():
+        mine = await _chat(user_id=CUSTOMER)
+        await _chat(user_id=CUSTOMER + 1)
+        return mine, await _list(user_id=CUSTOMER), await _count(user_id=CUSTOMER)
+
+    mine, listed, total = run(go())
+    assert listed == {mine}
+    assert total == 1

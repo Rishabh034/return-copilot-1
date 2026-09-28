@@ -17,9 +17,11 @@ enterprise is credited free capacity it never paid for.
 
 `send_message` itself is a streaming SSE endpoint wrapped around the whole
 agent runtime, so driving it end-to-end would test LangChain more than it
-tests settlement. The two helpers it funnels all three of its exit paths
-through (`_settle_turn` and `_release_budget_hold`) are where the money
-actually moves, so they are what this file exercises, against a real Postgres.
+tests settlement. The two helpers its stream exits funnel through
+(`_settle_turn` and `_release_budget_hold`) are where the money actually moves,
+so they are what this file exercises, against a real Postgres. Whether
+`send_message` actually reaches them on every path — including the ones that
+raise before the stream exists — is tests/test_messages_endpoint.py's job.
 
     docker compose up -d db
     export DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/db
@@ -214,6 +216,23 @@ def test_a_released_hold_charges_nothing():
 # --- holds that were never placed --------------------------------------------
 
 
+async def _live_hold_then_refusal():
+    """Another request's hold is in flight, and it fills the cap exactly.
+
+    The live hold is what makes these tests able to fail. Against an empty row
+    a wrongly-dropped hold floors at zero and looks harmless; here it would
+    free the other request's capacity, which is the real damage.
+    """
+    from app.config import settings
+
+    estimate = settings.budget_reservation_estimate_micros
+    live = await _reserve(limit=estimate)
+    refused = await _reserve(limit=estimate)
+    assert live.allowed is True
+    assert refused.allowed is False
+    return refused
+
+
 def test_a_refused_request_is_never_settled():
     """Settling a refusal would credit the enterprise capacity it never bought.
 
@@ -222,28 +241,27 @@ def test_a_refused_request_is_never_settled():
     """
 
     async def go():
-        # A cap with no room: the hold cannot fit, so none is taken.
-        state = await _reserve(limit=1)
+        refused = await _live_hold_then_refusal()
         before = await _read()
-        assert state.allowed is False
-        await _settle(budget_state=state, usage=WORKED_EXAMPLE_USAGE)
+        await _settle(budget_state=refused, usage=WORKED_EXAMPLE_USAGE)
         return before, await _read()
 
     before, after = run(go())
-    assert after[1] == before[1], "a refusal holds nothing, so nothing is released"
+    assert after[1] == before[1], "the other request's hold must survive"
+    assert after[0] == before[0], "a refused turn never ran, so it is never charged"
 
 
 def test_a_refused_request_is_never_released():
     async def go():
-        state = await _reserve(limit=1)
+        refused = await _live_hold_then_refusal()
         before = await _read()
         await _release_budget_hold(
-            enterprise_id=ENTERPRISE_ID, agent_slug=AGENT, budget_state=state
+            enterprise_id=ENTERPRISE_ID, agent_slug=AGENT, budget_state=refused
         )
         return before, await _read()
 
     before, after = run(go())
-    assert after == before
+    assert after == before, "the other request's hold must survive"
 
 
 def test_internal_support_activity_never_touches_the_cap():

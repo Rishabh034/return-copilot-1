@@ -25,7 +25,7 @@ Without `RUN_DB_TESTS=1` those files skip rather than fail. Every one of them
 uses synthetic enterprise ids far outside the real range and wipes its rows in
 a fixture either side, so they are safe against a dev database.
 
-**250 tests: 105 pure, 145 database-backed.**
+**275 tests: 105 pure, 170 database-backed.**
 
 ### One expected local failure
 
@@ -59,11 +59,12 @@ convenience is what breaks it. It passes in CI.
 | `test_admin_access.py` | 22 | Who may open the internal dashboard |
 | `test_budget_analytics_repo.py` | 10 | Budget dashboard reads, pressure ranking, projections |
 | `test_budget_repo_integration.py` | 10 | Spend caps: hold lifecycle, concurrency guard |
+| `test_messages_endpoint.py` | 14 | `POST /messages/` end to end: every exit path settles or releases its hold (below) |
 | `test_conversation_repo.py` | 10 | Conversation ownership, expiry, message sequencing |
 | `test_integration_key_repo.py` | 9 | Integration-key monthly caps |
 | `test_messages_settlement.py` | 9 | The budget hold lifecycle in the router (below) |
-| `test_user_chats.py` | 8 | Staff chat-listing scope (below) |
-| `test_feedback_repo.py` | 5 | Feedback creation and ownership |
+| `test_user_chats.py` | 13 | Staff chat-listing scope and paging (below) |
+| `test_feedback_repo.py` | 11 | Feedback creation and ownership, one identity field at a time |
 
 ## `test_context_trim.py`
 
@@ -130,7 +131,7 @@ file exercises.
 | `test_a_settled_turn_drops_the_hold_and_charges_the_measured_cost` | The estimate is admission control only and never reaches the ledger |
 | `test_a_turn_that_produced_nothing_still_drops_its_hold` | An empty turn is the easiest hold to leak; it settles at zero |
 | `test_a_released_hold_charges_nothing` | The release path leaves spend and reservation at zero |
-| `test_a_refused_request_is_never_settled` | A refusal held nothing, so settling would credit free capacity |
+| `test_a_refused_request_is_never_settled` | A refusal held nothing, so settling would credit free capacity. Run with another request's hold live: against an empty row a wrong drop floors at zero and cannot fail |
 | `test_a_refused_request_is_never_released` | The same, for release |
 | `test_internal_support_activity_never_touches_the_cap` | Staff take no hold; the ledger row is still written, uncounted |
 | `test_settling_only_moves_the_agent_that_placed_the_hold` | Settlement is agent-scoped |
@@ -140,6 +141,45 @@ file exercises.
 The two agent-scoping tests matter because `agent_slug` only became part of
 these signatures in `a9f097e`. A mismatched slug matches zero rows and fails
 *silently*: the hold is never released and that agent's cap shrinks permanently.
+
+## `test_messages_endpoint.py`
+
+The settlement file above calls the two helpers directly, so it cannot see a
+hold that `send_message` places and then never hands to either of them. This
+file drives the real route through the real app — middleware, exception
+handlers, Postgres — replacing only the agent runner (scripted stream), the
+titling call (billed Haiku) and the Slack webhook (`.env` may point at a real
+channel). Langfuse starts in the app lifespan, which the in-process transport
+does not run.
+
+| Test | Pins |
+| --- | --- |
+| `test_a_completed_turn_charges_the_measured_cost_and_drops_the_hold` | The `done` path |
+| `test_a_turn_that_errors_before_any_output_releases_its_hold` | Runner `error` event, nothing produced: release, no charge |
+| `test_a_turn_that_errors_after_a_billed_iteration_settles_what_it_used` | A finished iteration was paid for, so it is charged |
+| `test_a_runner_exception_mid_stream_still_drops_the_hold` | And the raw exception text never reaches the browser |
+| `test_a_client_disconnect_mid_stream_still_drops_the_hold` | Driven by closing the body iterator, as Starlette does on hang-up |
+| `test_a_turn_drops_only_its_own_hold` (x4) | Every path above, with a concurrent request's hold live, so a double drop shows |
+| `test_a_conversation_owned_by_someone_else_is_a_404_that_holds_nothing` | The leak this file was written for |
+| `test_a_malformed_conversation_id_is_a_400_that_holds_nothing` | Was a 500 that also leaked |
+| `test_a_budget_refusal_is_a_429_that_holds_nothing` | |
+| `test_repeated_404s_do_not_accumulate_holds` | Five bad requests used to strand $2.50 |
+| `test_signed_staff_turn_takes_no_hold_and_is_not_counted` | Signed staff: no hold, ledger row attributed but uncounted |
+
+### The bug this file caught
+
+`send_message` placed the hold, then checked conversation ownership. A 404
+(someone else's or an expired conversation) or a malformed id raised between
+the two, before the stream existed, so neither settle nor release ever ran and
+the $0.50 sat in `reserved_micros` until the month rolled over. Holds are
+placed even with enforcement off, so these would have accumulated silently
+and all bitten at once when the flag was flipped. Fixed by moving the hold to
+the last step before the response, and a malformed id is now a 400.
+
+Not covered: a client that disconnects after the response is returned but
+before the body is first iterated. The generator never starts, so its
+`finally` never runs. Only a sweeper for stale holds can recover that one,
+and none exists despite the comment on `_release_budget_hold`.
 
 ## `test_user_chats.py`
 
@@ -163,6 +203,11 @@ appear in another's listing.
 | `test_the_shared_staff_account_is_split_by_internal_user_id` | Staff share one Django account; the person is `internal_user_id` |
 | `test_the_date_window_is_half_open` | `>= frm` and `< to`, so a chat is never in two windows |
 | `test_count_and_list_apply_the_same_filters` | `count_chats` drives the page count the API validates against |
+| `test_the_listing_is_newest_created_first` | Pinned as observed: the docstring says "most recently updated first", the query orders by `created_at` |
+| `test_pages_partition_the_listing_with_no_gaps_or_repeats` | Every chat on exactly one page, ties on `created_at` included |
+| `test_a_page_below_one_is_treated_as_the_first_page` | |
+| `test_the_page_size_is_capped` | `limit` is clamped to `MAX_LIMIT` |
+| `test_filtering_to_one_customer_seat` | `user_id` filter, list and count |
 
 `/admin/user-chats` is gated on ClickPost staff rather than on the caller
 owning the rows, so nothing here asserts ownership; this module is not the
@@ -218,8 +263,6 @@ zero: no router endpoint has a test beyond the settlement helpers above.
 
 Known gaps inside covered modules:
 
-- `test_feedback_repo.py` never exercises the `is_internal_user=True` ownership
-  path, though `FeedbackRepository.create` scopes on it.
 - `user_token_repo.py`'s `IntegrityError` retry, for two simultaneous first
   requests, never fires — the concurrency test pre-creates the row, so the
   exact race the guard exists for is unproven.

@@ -70,10 +70,21 @@ def clean():
     run(_wipe())
 
 
-async def _conversation(*, agent_slug, user_id=USER_ID, enterprise_id=ENTERPRISE_ID):
+async def _conversation(
+    *,
+    agent_slug,
+    user_id=USER_ID,
+    enterprise_id=ENTERPRISE_ID,
+    is_internal_user=False,
+    internal_user_id=None,
+):
     async with AsyncSessionLocal() as s:
         conv = await ConversationRepository(s).create(
-            user_id=user_id, enterprise_id=enterprise_id, agent_slug=agent_slug
+            user_id=user_id,
+            enterprise_id=enterprise_id,
+            agent_slug=agent_slug,
+            is_internal_user=is_internal_user,
+            internal_user_id=internal_user_id,
         )
         await s.commit()
         return conv.id
@@ -130,30 +141,81 @@ def test_feedback_create_defaults_comment_and_internal_fields():
     assert is_internal_user is False
 
 
-def test_feedback_create_refuses_a_conversation_the_caller_does_not_own():
-    """`create()` now checks ownership itself, independent of whatever the
-    router already checked — a caller from a different enterprise must not be
-    able to attach feedback to someone else's conversation."""
+STAFF = {"is_internal_user": True, "internal_user_id": "me"}
+
+
+@pytest.mark.parametrize(
+    "owner, caller",
+    [
+        pytest.param({}, {"user_id": OTHER_USER_ID}, id="other-user"),
+        pytest.param({}, {"enterprise_id": OTHER_ENTERPRISE_ID}, id="other-enterprise"),
+        # Only the flag differs. The router never sends this pair (it requires
+        # an internal_user_id for internal callers), which is exactly why the
+        # repository's own flag check is otherwise untested.
+        pytest.param({}, {"is_internal_user": True}, id="internal-flag-only"),
+        pytest.param({}, STAFF, id="staff-on-customer-chat"),
+        pytest.param(STAFF, {}, id="customer-on-staff-chat"),
+        pytest.param(
+            STAFF, {**STAFF, "internal_user_id": "colleague"}, id="other-staff-member"
+        ),
+    ],
+)
+def test_feedback_create_refuses_a_conversation_the_caller_does_not_own(owner, caller):
+    """`create()` checks ownership itself, independent of whatever the router
+    already checked.
+
+    Each case differs from the owner in exactly one identity field. A caller
+    that differed in several at once would be refused even if all but one of
+    the checks were deleted, so the test could not tell them apart.
+    """
     from app.exceptions import NotFoundError
 
     allocation = registry.get("allocation").slug
-    conv_id = run(
-        _conversation(agent_slug=allocation, user_id=USER_ID, enterprise_id=ENTERPRISE_ID)
-    )
+    conv_id = run(_conversation(agent_slug=allocation, **owner))
+
+    identity = {
+        "user_id": USER_ID,
+        "enterprise_id": ENTERPRISE_ID,
+        "is_internal_user": False,
+        "internal_user_id": None,
+        **caller,
+    }
 
     async def go():
         async with AsyncSessionLocal() as s:
             await FeedbackRepository(s).create(
                 conversation_id=conv_id,
                 seq=0,
-                user_id=OTHER_USER_ID,
-                enterprise_id=OTHER_ENTERPRISE_ID,
                 positive=False,
                 comment="attached to someone else's conversation",
+                **identity,
             )
 
     with pytest.raises(NotFoundError):
         run(go())
+
+
+def test_staff_can_leave_feedback_on_their_own_chat():
+    """The positive half of the staff cases above, so they are not passing
+    merely because staff can never leave feedback at all."""
+    allocation = registry.get("allocation").slug
+    conv_id = run(_conversation(agent_slug=allocation, **STAFF))
+
+    async def go():
+        async with AsyncSessionLocal() as s:
+            row = await FeedbackRepository(s).create(
+                conversation_id=conv_id,
+                seq=0,
+                user_id=USER_ID,
+                enterprise_id=ENTERPRISE_ID,
+                positive=True,
+                comment=None,
+                **STAFF,
+            )
+            await s.commit()
+            return row.internal_user_id
+
+    assert run(go()) == "me"
 
 
 def test_feedback_create_refuses_an_unknown_conversation_id():

@@ -352,7 +352,25 @@ def test_blocks_filters_by_enterprise_and_orders_newest_first(agents):
             await s.commit()
 
     run(record(ENTERPRISE_ID, "quota_user_window"))
+    run(record(ENTERPRISE_ID, "budget_enterprise"))
     run(record(OTHER_ENTERPRISE_ID, "budget_enterprise"))
+
+    async def backdate(limit_kind, minutes):
+        """Both rows land in the same second; pull one clearly into the past
+        so the ordering is decided by the query, not by insert timing."""
+        async with AsyncSessionLocal() as s:
+            await s.execute(
+                update(BudgetBlockEvent)
+                .where(
+                    BudgetBlockEvent.enterprise_id == ENTERPRISE_ID,
+                    BudgetBlockEvent.limit_kind == limit_kind,
+                )
+                .values(created_at=BudgetBlockEvent.created_at - timedelta(minutes=minutes))
+            )
+            await s.commit()
+
+    # Recorded first, so an insertion-order read would put it first too.
+    run(backdate("quota_user_window", 2))
 
     async def go():
         async with AsyncSessionLocal() as s:
@@ -363,9 +381,11 @@ def test_blocks_filters_by_enterprise_and_orders_newest_first(agents):
             )
 
     events = run(go())
-    assert len(events) == 1
-    assert events[0]["enterprise_id"] == ENTERPRISE_ID
-    assert events[0]["limit_kind"] == "quota_user_window"
+    assert {e["enterprise_id"] for e in events} == {ENTERPRISE_ID}
+    assert [e["limit_kind"] for e in events] == [
+        "budget_enterprise",
+        "quota_user_window",
+    ], "newest first"
 
 
 def test_enterprise_users_splits_shared_internal_accounts_by_internal_user_id(agents):

@@ -4,8 +4,10 @@ import logging
 import os
 from logging.handlers import TimedRotatingFileHandler
 
+import httpx
 from opentelemetry import trace
 
+from app.clients.observability import redact_url
 from app.config import settings
 from app.request_context import request_id_var
 
@@ -44,6 +46,21 @@ class _TraceContextFilter(logging.Filter):
         return True
 
 
+class _RedactHttpxUrlFilter(logging.Filter):
+    """Masks credential query params in httpx's own "HTTP Request: GET <url>"
+    line. ClickpostClient sends an enterprise license key as `?key=`, and that
+    line would otherwise carry it into the log file, S3 and SigNoz.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                redact_url(str(arg)) if isinstance(arg, httpx.URL) else arg
+                for arg in record.args
+            )
+        return True
+
+
 class _SkipHealthFilter(logging.Filter):
     """Drops access-log lines for the /health endpoint (pure noise from probes)."""
 
@@ -66,6 +83,7 @@ def setup_logging() -> None:
     root.handlers = [stream_handler]
 
     logging.captureWarnings(True)
+    logging.getLogger("httpx").addFilter(_RedactHttpxUrlFilter())
 
     if settings.log_to_file:
         os.makedirs(settings.log_dir, exist_ok=True)

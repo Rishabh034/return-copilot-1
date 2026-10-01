@@ -38,9 +38,12 @@ from __future__ import annotations
 
 import logging
 import os
-import uuid
 from contextlib import ExitStack, contextmanager, nullcontext
 from typing import TYPE_CHECKING, Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+from opentelemetry import trace as otel_trace
+from opentelemetry.trace import Status, StatusCode
 
 from app.config import settings
 
@@ -57,6 +60,50 @@ _logger_provider: "LoggerProvider | None" = None
 
 # opentelemetry-instrumentation-anthropic's scope name — see module docstring.
 _BLOCKED_LANGFUSE_SCOPES = frozenset({"opentelemetry.instrumentation.anthropic"})
+
+
+# ClickpostAuth sends an enterprise's license key as `?key=<uuid>` - a
+# credential that must never reach a span attribute or a log line.
+_REDACTED_QUERY_PARAMS = frozenset({"key"})
+
+# Probes and the docs pages - pure noise as traces.
+_FASTAPI_EXCLUDED_URLS = "/health$,/docs,/redoc$,/openapi.json$"
+
+
+def redact_url(url: str) -> str:
+    """`url` with the value of every credential-bearing query param masked."""
+    parts = urlsplit(url)
+    if not parts.query:
+        return url
+    query = [
+        (k, "REDACTED" if k.lower() in _REDACTED_QUERY_PARAMS else v)
+        for k, v in parse_qsl(parts.query, keep_blank_values=True)
+    ]
+    return urlunsplit(parts._replace(query=urlencode(query)))
+
+
+def _redact_httpx_span(span: Any, request: Any) -> None:
+    # The instrumentor has already written the full URL by the time its
+    # request hook runs, so overwrite whichever semconv attribute it used.
+    if not span.is_recording():
+        return
+    url = redact_url(str(request.url))
+    for attr in ("http.url", "url.full"):
+        if attr in (span.attributes or {}):
+            span.set_attribute(attr, url)
+
+
+async def _redact_httpx_span_async(span: Any, request: Any) -> None:
+    _redact_httpx_span(span, request)
+
+
+def _instrument_httpx() -> None:
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+    HTTPXClientInstrumentor().instrument(
+        request_hook=_redact_httpx_span,
+        async_request_hook=_redact_httpx_span_async,
+    )
 
 
 def _is_langfuse_export_span(span: "ReadableSpan") -> bool:
@@ -136,9 +183,10 @@ def init_otel() -> None:
     call unconditionally at startup, same as init_langfuse(). Exports to
     `settings.otel_exporter_otlp_endpoint` over OTLP/gRPC, then instruments
     httpx (ClickpostClient), SQLAlchemy (app/db.py) and the raw Anthropic SDK
-    (LangChain's ChatAnthropic, and app/agenticintegrations/client.py) so
-    their calls become child spans of whatever span is active when they're
-    made — the inbound HTTP span from instrument_fastapi_app, most often.
+    (under LangChain's ChatAnthropic) so their calls become child spans of
+    whatever span is active when they're made — the inbound HTTP span from
+    instrument_fastapi_app, most often. Only the API process calls this: the
+    app/agenticintegrations consumer runs separately and stays untraced.
 
     Also attaches a logging.Handler to the root logger (app/logging_config.py
     already runs by the time this is called) so every log record this process
@@ -152,11 +200,9 @@ def init_otel() -> None:
     if not settings.otel_enabled:
         return
 
-    from opentelemetry import trace
     from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
     from opentelemetry.instrumentation.anthropic import AnthropicInstrumentor
-    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
     from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
     from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
     from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
@@ -167,7 +213,7 @@ def init_otel() -> None:
     resource = Resource.create({SERVICE_NAME: settings.otel_service_name})
 
     global _tracer_provider
-    current_provider = trace.get_tracer_provider()
+    current_provider = otel_trace.get_tracer_provider()
     if isinstance(current_provider, TracerProvider):
         # Something else (Langfuse's SDK, if init_langfuse() ran first)
         # already claimed the global provider - a second set_tracer_provider
@@ -179,13 +225,13 @@ def init_otel() -> None:
         _tracer_provider = current_provider
     else:
         _tracer_provider = TracerProvider(resource=resource)
-        trace.set_tracer_provider(_tracer_provider)
+        otel_trace.set_tracer_provider(_tracer_provider)
 
     _tracer_provider.add_span_processor(
         BatchSpanProcessor(OTLPSpanExporter(endpoint=settings.otel_exporter_otlp_endpoint))
     )
 
-    HTTPXClientInstrumentor().instrument()
+    _instrument_httpx()
     AnthropicInstrumentor().instrument()
 
     # AsyncEngine has no engine-connect events of its own; it delegates to the
@@ -225,7 +271,7 @@ def instrument_fastapi_app(app: "FastAPI") -> None:
 
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-    FastAPIInstrumentor.instrument_app(app)
+    FastAPIInstrumentor.instrument_app(app, excluded_urls=_FASTAPI_EXCLUDED_URLS)
 
 
 def shutdown_otel() -> None:
@@ -237,38 +283,6 @@ def shutdown_otel() -> None:
         _logger_provider.shutdown()
 
 
-def _conversation_parent_context(conversation_id: str):
-    """A synthetic remote-parent OTel context whose trace_id is deterministically
-    derived from conversation_id, so every span created under it - across every
-    separate HTTP turn of the same conversation - lands in the same OTel trace.
-    There's no real span behind this parent; it's the same shape OTel already
-    uses for a trace continued from an unistrumented upstream caller, and
-    SigNoz renders the trace with whatever we start under it as the root.
-    """
-    from opentelemetry import trace as otel_trace
-    from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
-
-    try:
-        trace_id = uuid.UUID(conversation_id).int
-    except ValueError:
-        # Not a UUID (shouldn't happen for a conversation_id - defensive only).
-        # A stable 128-bit id still keyed off the same string, so repeated
-        # calls for the same non-UUID id still land in one trace.
-        import hashlib
-
-        trace_id = int.from_bytes(hashlib.sha256(conversation_id.encode()).digest()[:16], "big")
-    trace_id = trace_id or 1  # trace_id/span_id must be non-zero
-    span_id = (trace_id & 0xFFFFFFFFFFFFFFFF) or 1
-
-    fake_parent = SpanContext(
-        trace_id=trace_id,
-        span_id=span_id,
-        is_remote=True,
-        trace_flags=TraceFlags(TraceFlags.SAMPLED),
-    )
-    return otel_trace.set_span_in_context(NonRecordingSpan(fake_parent))
-
-
 @contextmanager
 def _otel_conversation_span(
     name: str,
@@ -277,18 +291,21 @@ def _otel_conversation_span(
     tags: list[str] | None = None,
     metadata: dict[str, str] | None = None,
 ):
-    from opentelemetry import trace as otel_trace
-
+    """A span for one turn, nested under whatever is active - the inbound HTTP
+    request span, so a turn's trace runs from the request down to its DB,
+    Clickpost and LLM calls. One trace per turn; `conversation_id` is an
+    attribute on both this span and the request span, which is what SigNoz
+    filters on to list every turn of a conversation.
+    """
     attributes: dict[str, Any] = {"conversation_id": conversation_id}
     if tags:
         attributes["tags"] = tags
     if metadata:
         attributes.update({f"metadata.{k}": v for k, v in metadata.items()})
 
+    otel_trace.get_current_span().set_attribute("conversation_id", conversation_id)
     tracer = otel_trace.get_tracer(__name__)
-    with tracer.start_as_current_span(
-        name, context=_conversation_parent_context(conversation_id), attributes=attributes
-    ) as span:
+    with tracer.start_as_current_span(name, attributes=attributes) as span:
         yield span
 
 
@@ -309,8 +326,6 @@ def otel_span(name: str, **attributes: Any):
 
 @contextmanager
 def _otel_span(name: str, **attributes: Any):
-    from opentelemetry import trace as otel_trace
-
     tracer = otel_trace.get_tracer(__name__)
     clean_attrs = {k: v for k, v in attributes.items() if v is not None}
     with tracer.start_as_current_span(name, attributes=clean_attrs) as span:
@@ -329,10 +344,34 @@ def mark_span_error(span: Any, exc: BaseException, description: str | None = Non
     """
     if span is None:
         return
-    from opentelemetry.trace import Status, StatusCode
-
     span.record_exception(exc)
     span.set_status(Status(StatusCode.ERROR, description or str(exc)))
+
+
+def mark_current_span_error(description: str, exc: BaseException | None = None) -> None:
+    """Set whatever span is active to ERROR - for a failure reported to the
+    client inside an SSE stream, where the HTTP status is already a 200 on
+    the wire and nothing else would flag the turn. No-op when otel is off.
+    """
+    if not settings.otel_enabled:
+        return
+    span = otel_trace.get_current_span()
+    if exc is not None:
+        span.record_exception(exc)
+    span.set_status(Status(StatusCode.ERROR, description))
+
+
+def record_masked_status(status_code: int) -> None:
+    """Put the real status on the request span for a response that goes out as
+    a 200 with its status declared to the envelope middleware instead - the
+    instrumentor only ever sees the 200. No-op when otel is off.
+    """
+    if not settings.otel_enabled:
+        return
+    span = otel_trace.get_current_span()
+    span.set_attribute("http.envelope_status_code", status_code)
+    if status_code >= 500:
+        span.set_status(Status(StatusCode.ERROR, f"envelope status {status_code}"))
 
 
 def langfuse_identity(
@@ -421,12 +460,10 @@ def trace_span(
     """Wrap a block of work in a Langfuse span, or a no-op if tracing is disabled.
 
     Also opens an OTel span for the same block when settings.otel_enabled and
-    session_id are both set, parented to a synthetic per-conversation context
-    (see _conversation_parent_context) so that every trace_span/otel_span call
-    for the same conversation_id - across this turn and every future turn -
-    lands in one OTel trace, with session_id as that trace's conversation_id.
-    This happens independently of whether Langfuse is enabled; the two halves
-    below don't interact.
+    session_id are both set, nested under the inbound request span and tagged
+    with session_id as its conversation_id (see _otel_conversation_span). This
+    happens whether or not Langfuse is enabled; when both are, the Langfuse
+    span nests under the OTel one and so shares the request's trace id.
 
     Any LangChain calls made inside the block (via langchain_trace_config)
     nest under this span automatically. On disabled/uninitialized tracing, or

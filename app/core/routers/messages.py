@@ -15,7 +15,11 @@ from datetime import datetime
 from app.db import AsyncSessionLocal
 from app.clients.clickpost import ClickpostAuth
 from app.core.auth.agent_token import AuthContext, resolve_identity_context
-from app.clients.observability import langfuse_identity, trace_span
+from app.clients.observability import (
+    langfuse_identity,
+    mark_current_span_error,
+    trace_span,
+)
 from app.exceptions import AppError, NotFoundError, BadRequestError
 from app.utilities.alerts import alert_slack
 from app.core.request_spec import agent_spec
@@ -553,6 +557,9 @@ async def send_message(
                         if event_type == "text_delta":
                             partial_buffer += data.get("delta", "")
 
+                        if event_type == "error":
+                            mark_current_span_error(data.get("code") or "error")
+
                         if event_type == "done":
                             usage = data.get("usage") or {}
                             secondary_usage = data.get("secondary_usage") or {}
@@ -654,6 +661,7 @@ async def send_message(
                     logger.exception("SSE stream error")
                     if span:
                         span.update(level="ERROR", status_message=str(e))
+                    mark_current_span_error(str(e), e)
                     await asyncio.to_thread(
                         alert_slack, f"chat_turn conversation_id={conversation_id}", e
                     )

@@ -13,6 +13,7 @@ from app.clients.observability import (
     init_langfuse,
     init_otel,
     instrument_fastapi_app,
+    record_masked_status,
     shutdown_langfuse,
     shutdown_otel,
 )
@@ -69,6 +70,7 @@ async def agent_auth_error_handler(_request, exc: AgentAuthError) -> JSONRespons
     # 200 on the wire, real status declared to the envelope middleware. The body
     # matches FastAPI's {"detail": ...} shape so the message is lifted into
     # meta.message the same way every other error's is.
+    record_masked_status(exc.status_code)
     return JSONResponse(
         status_code=200,
         content={"detail": exc.detail},

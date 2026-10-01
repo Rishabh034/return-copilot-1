@@ -4,12 +4,19 @@ import logging
 import os
 from logging.handlers import TimedRotatingFileHandler
 
+import httpx
+from opentelemetry import trace
+
+from app.clients.observability import redact_url
 from app.config import settings
 from app.request_context import request_id_var
 
 ACTIVE_LOG_FILENAME = "app.log"
 
-_FORMAT = "%(asctime)s %(levelname)s [%(name)s] [%(request_id)s] %(message)s"
+_FORMAT = (
+    "%(asctime)s %(levelname)s [%(name)s] [%(request_id)s] "
+    "[trace_id=%(trace_id)s span_id=%(span_id)s] %(message)s"
+)
 
 
 class _RequestIdFilter(logging.Filter):
@@ -17,6 +24,40 @@ class _RequestIdFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         record.request_id = request_id_var.get()
+        return True
+
+
+class _TraceContextFilter(logging.Filter):
+    """Injects the active OTel trace_id/span_id into every log record, so a
+    trace in SigNoz can be grepped straight to the app log lines emitted
+    during it. Empty when nothing is active (startup logs, background work
+    outside a span) or when otel is disabled - get_current_span() always
+    returns a valid-but-non-recording span in that case, never raises.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        ctx = trace.get_current_span().get_span_context()
+        if ctx.is_valid:
+            record.trace_id = format(ctx.trace_id, "032x")
+            record.span_id = format(ctx.span_id, "016x")
+        else:
+            record.trace_id = ""
+            record.span_id = ""
+        return True
+
+
+class _RedactHttpxUrlFilter(logging.Filter):
+    """Masks credential query params in httpx's own "HTTP Request: GET <url>"
+    line. ClickpostClient sends an enterprise license key as `?key=`, and that
+    line would otherwise carry it into the log file, S3 and SigNoz.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                redact_url(str(arg)) if isinstance(arg, httpx.URL) else arg
+                for arg in record.args
+            )
         return True
 
 
@@ -30,9 +71,11 @@ class _SkipHealthFilter(logging.Filter):
 def setup_logging() -> None:
     formatter = logging.Formatter(_FORMAT)
     request_id_filter = _RequestIdFilter()
+    trace_context_filter = _TraceContextFilter()
 
     stream_handler = logging.StreamHandler()
     stream_handler.addFilter(request_id_filter)
+    stream_handler.addFilter(trace_context_filter)
     stream_handler.setFormatter(formatter)
 
     root = logging.getLogger()
@@ -40,6 +83,7 @@ def setup_logging() -> None:
     root.handlers = [stream_handler]
 
     logging.captureWarnings(True)
+    logging.getLogger("httpx").addFilter(_RedactHttpxUrlFilter())
 
     if settings.log_to_file:
         os.makedirs(settings.log_dir, exist_ok=True)
@@ -55,6 +99,7 @@ def setup_logging() -> None:
             delay=True,
         )
         file_handler.addFilter(request_id_filter)
+        file_handler.addFilter(trace_context_filter)
         file_handler.setFormatter(formatter)
         root.addHandler(file_handler)
 

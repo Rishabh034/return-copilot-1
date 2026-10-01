@@ -9,7 +9,14 @@ from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.clients.clickpost import ClickpostClient
-from app.clients.observability import init_langfuse, shutdown_langfuse
+from app.clients.observability import (
+    init_langfuse,
+    init_otel,
+    instrument_fastapi_app,
+    record_masked_status,
+    shutdown_langfuse,
+    shutdown_otel,
+)
 from app.config import settings
 from app.cors_alert import CorsRejectionAlertMiddleware
 from app.core.auth.agent_token import AgentAuthError
@@ -63,6 +70,7 @@ async def agent_auth_error_handler(_request, exc: AgentAuthError) -> JSONRespons
     # 200 on the wire, real status declared to the envelope middleware. The body
     # matches FastAPI's {"detail": ...} shape so the message is lifted into
     # meta.message the same way every other error's is.
+    record_masked_status(exc.status_code)
     return JSONResponse(
         status_code=200,
         content={"detail": exc.detail},
@@ -85,6 +93,11 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # otel first: Langfuse's SDK is itself OTEL-based and claims the global
+    # TracerProvider on whichever of these runs first (see
+    # app/clients/observability.py) — otel first means ours carries the
+    # `service.name` resource attribute our OTLP collector needs.
+    init_otel()
     init_langfuse()
     app.state.clickpost_client = ClickpostClient(
         base_url=settings.clickpost_base_url,
@@ -102,6 +115,7 @@ async def lifespan(app: FastAPI):
             # last so shutdown logs from the lines above still make the flush
             await log_uploader.aclose()
         shutdown_langfuse()
+        shutdown_otel()
 
 
 def create_app() -> FastAPI:
@@ -111,6 +125,8 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+    # no-op unless settings.otel_enabled - see app/clients/observability.py
+    instrument_fastapi_app(application)
 
     application.add_middleware(RequestIdMiddleware)
     application.add_middleware(ResponseEnvelopeMiddleware)

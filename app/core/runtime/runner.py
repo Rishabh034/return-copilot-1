@@ -17,7 +17,7 @@ from pydantic import ValidationError
 
 from app.clients.clickpost import ClickpostAPIError, ClickpostAuth, ClickpostPermissionError
 from app.clients.llm import create_chat_model, create_secondary_chat_model
-from app.clients.observability import langchain_trace_config
+from app.clients.observability import langchain_trace_config, mark_span_error, otel_span
 from app.config import settings
 from app.core.runtime.context import (
     build_system_message,
@@ -184,50 +184,61 @@ def _latest_user_text(messages: list[BaseMessage]) -> str | None:
 async def _invoke_tool(
     tool: BaseTool, args: dict[str, Any], conversation_id: str, timeout_seconds: int
 ) -> dict[str, Any]:
-    try:
-        result = await asyncio.wait_for(tool.ainvoke(args), timeout=timeout_seconds)
-        if isinstance(result, dict):
-            return result
-        return {"result": result}
-    except asyncio.TimeoutError:
-        error = tool_error(
-            ToolErrorCode.TIMEOUT,
-            tool_name=tool.name,
-            detail=f"timed out after {timeout_seconds}s",
-        )
-    except ClickpostPermissionError as e:
-        error = tool_error(
-            ToolErrorCode.PERMISSION_DENIED, tool_name=tool.name, detail=str(e)
-        )
-    except ClickpostAPIError as e:
-        error = tool_error(ToolErrorCode.UPSTREAM_ERROR, tool_name=tool.name, detail=str(e))
-    except ValidationError as e:
-        # The model's own malformed call. It is told exactly what to fix, and the
-        # pydantic message is the one piece of detail that is safe to pass on
-        # because it describes the arguments the model itself supplied.
-        error = tool_error(
-            ToolErrorCode.INVALID_ARGUMENTS,
-            tool_name=tool.name,
-            detail=str(e),
-            model_message=f"Invalid tool arguments: {e.errors()[0]['msg']}. Correct them and call again.",
-        )
-    except Exception as e:
-        logger.exception("Tool %s failed", tool.name)
-        error = tool_error(ToolErrorCode.INTERNAL, tool_name=tool.name, detail=str(e))
+    with otel_span(f"tool:{tool.name}", conversation_id=conversation_id) as span:
+        try:
+            result = await asyncio.wait_for(tool.ainvoke(args), timeout=timeout_seconds)
+            if isinstance(result, dict):
+                return result
+            return {"result": result}
+        except asyncio.TimeoutError as e:
+            caught_exc = e
+            error = tool_error(
+                ToolErrorCode.TIMEOUT,
+                tool_name=tool.name,
+                detail=f"timed out after {timeout_seconds}s",
+            )
+        except ClickpostPermissionError as e:
+            caught_exc = e
+            error = tool_error(
+                ToolErrorCode.PERMISSION_DENIED, tool_name=tool.name, detail=str(e)
+            )
+        except ClickpostAPIError as e:
+            caught_exc = e
+            error = tool_error(ToolErrorCode.UPSTREAM_ERROR, tool_name=tool.name, detail=str(e))
+        except ValidationError as e:
+            caught_exc = e
+            # The model's own malformed call. It is told exactly what to fix, and the
+            # pydantic message is the one piece of detail that is safe to pass on
+            # because it describes the arguments the model itself supplied.
+            error = tool_error(
+                ToolErrorCode.INVALID_ARGUMENTS,
+                tool_name=tool.name,
+                detail=str(e),
+                model_message=f"Invalid tool arguments: {e.errors()[0]['msg']}. Correct them and call again.",
+            )
+        except Exception as e:
+            caught_exc = e
+            logger.exception("Tool %s failed", tool.name)
+            error = tool_error(ToolErrorCode.INTERNAL, tool_name=tool.name, detail=str(e))
 
-    logger.warning(
-        "Tool %s failed code=%s detail=%s", tool.name, error.code, error.detail
-    )
-    # Slack gets the engineer-facing detail; the model never does.
-    await asyncio.to_thread(
-        tool_errors_slack_update,
-        SlackAlertTool(
-            conversation_id=conversation_id,
-            tool_name=tool.name,
-            error=f"[{error.code}] {error.detail}",
-        ),
-    )
-    return error.as_tool_result()
+        # Caught above rather than left to propagate, so the span otherwise
+        # looks like an ordinary successful one - mark it explicitly instead.
+        # (`except ... as e` unbinds `e` once its block ends, hence `caught_exc`.)
+        mark_span_error(span, caught_exc, f"[{error.code}] {error.detail}")
+
+        logger.warning(
+            "Tool %s failed code=%s detail=%s", tool.name, error.code, error.detail
+        )
+        # Slack gets the engineer-facing detail; the model never does.
+        await asyncio.to_thread(
+            tool_errors_slack_update,
+            SlackAlertTool(
+                conversation_id=conversation_id,
+                tool_name=tool.name,
+                error=f"[{error.code}] {error.detail}",
+            ),
+        )
+        return error.as_tool_result()
 
 
 class AgentRunner:

@@ -44,7 +44,7 @@ class OrderInput(BaseModel):
     reference_number: str | None = None
     zone: str | None = None
     item: str | None = None
-    invoice_value: float | None = None
+    invoice_value: float 
     weight: float | None = Field(default=None, description="Dry weight in grams.")
     volumetric_weight: float | None = None
     higher_of_dry_weight_and_volumetric_weight: float | None = None
@@ -85,7 +85,7 @@ class RunRecommendationInput(BaseModel):
     order: OrderInput = Field(
         description=(
             "Order details to run the recommendation for. Include all fields "
-            "relevant to allocation; at minimum pickup_pincode, drop_pincode, and delivery_type."
+            "relevant to allocation; at minimum pickup_pincode, drop_pincode, invoice_value, and delivery_type."
         )
     )
 

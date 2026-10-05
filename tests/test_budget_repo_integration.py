@@ -41,6 +41,7 @@ if RUN_DB_TESTS:
     from app.core.billing.usage_ledger_repo import UsageLedgerRepository
 
 ENTERPRISE_ID = 999_000_042
+AGENT_SLUG = "allocation"
 DOLLAR = 1_000_000
 
 
@@ -73,7 +74,9 @@ async def _wipe():
 async def _configure(*, limit, spent=0, reserved=0, enforcement=True):
     """Create this period's row and force it into a known state."""
     async with AsyncSessionLocal() as s:
-        row = await BudgetRepository(s).get_or_create(enterprise_id=ENTERPRISE_ID)
+        row = await BudgetRepository(s).get_or_create(
+            enterprise_id=ENTERPRISE_ID, agent_slug=AGENT_SLUG
+        )
         row.limit_micros = limit
         row.spent_micros = spent
         row.reserved_micros = reserved
@@ -107,8 +110,12 @@ def test_get_or_create_is_idempotent_within_a_period():
     async def go():
         async with AsyncSessionLocal() as s:
             repo = BudgetRepository(s)
-            first = await repo.get_or_create(enterprise_id=ENTERPRISE_ID)
-            second = await repo.get_or_create(enterprise_id=ENTERPRISE_ID)
+            first = await repo.get_or_create(
+                enterprise_id=ENTERPRISE_ID, agent_slug=AGENT_SLUG
+            )
+            second = await repo.get_or_create(
+                enterprise_id=ENTERPRISE_ID, agent_slug=AGENT_SLUG
+            )
             await s.commit()
             return first.id, second.id
 
@@ -119,7 +126,9 @@ def test_get_or_create_is_idempotent_within_a_period():
 def test_first_turn_of_a_period_seeds_the_configured_cap():
     async def go():
         async with AsyncSessionLocal() as s:
-            row = await BudgetRepository(s).get_or_create(enterprise_id=ENTERPRISE_ID)
+            row = await BudgetRepository(s).get_or_create(
+                enterprise_id=ENTERPRISE_ID, agent_slug=AGENT_SLUG
+            )
             await s.commit()
             return row.limit_micros, row.enforcement_enabled, row.spent_micros
 
@@ -136,7 +145,9 @@ def test_enforcement_off_always_allows_even_when_over_the_cap():
     async def go():
         await _configure(limit=1 * DOLLAR, spent=999 * DOLLAR, enforcement=False)
         async with AsyncSessionLocal() as s:
-            state = await BudgetRepository(s).reserve(enterprise_id=ENTERPRISE_ID)
+            state = await BudgetRepository(s).reserve(
+                enterprise_id=ENTERPRISE_ID, agent_slug=AGENT_SLUG
+            )
             await s.commit()
             return state.allowed
 
@@ -148,7 +159,9 @@ def test_reserve_refuses_when_the_hold_will_not_fit():
         # 20c left, the hold wants 50c
         await _configure(limit=25 * DOLLAR, spent=25 * DOLLAR - 200_000)
         async with AsyncSessionLocal() as s:
-            state = await BudgetRepository(s).reserve(enterprise_id=ENTERPRISE_ID)
+            state = await BudgetRepository(s).reserve(
+                enterprise_id=ENTERPRISE_ID, agent_slug=AGENT_SLUG
+            )
             await s.commit()
             return state
 
@@ -168,7 +181,9 @@ def test_concurrent_reserves_cannot_oversubscribe_the_cap():
 
         async def one():
             async with AsyncSessionLocal() as s:
-                state = await BudgetRepository(s).reserve(enterprise_id=ENTERPRISE_ID)
+                state = await BudgetRepository(s).reserve(
+                    enterprise_id=ENTERPRISE_ID, agent_slug=AGENT_SLUG
+                )
                 await s.commit()
                 return state.allowed
 
@@ -188,13 +203,14 @@ def test_settle_replaces_the_hold_with_the_measured_cost():
         period = await _configure(limit=25 * DOLLAR)
         async with AsyncSessionLocal() as s:
             repo = BudgetRepository(s)
-            await repo.reserve(enterprise_id=ENTERPRISE_ID)
+            await repo.reserve(enterprise_id=ENTERPRISE_ID, agent_slug=AGENT_SLUG)
             await s.commit()
         held_after_reserve = (await _read())[1]
 
         async with AsyncSessionLocal() as s:
             await BudgetRepository(s).settle(
                 enterprise_id=ENTERPRISE_ID,
+                agent_slug=AGENT_SLUG,
                 period_start=period,
                 estimate_micros=500_000,
                 actual_micros=337_400,  # the worked example
@@ -212,11 +228,12 @@ def test_release_drops_the_hold_without_charging():
     async def go():
         period = await _configure(limit=25 * DOLLAR)
         async with AsyncSessionLocal() as s:
-            await BudgetRepository(s).reserve(enterprise_id=ENTERPRISE_ID)
+            await BudgetRepository(s).reserve(enterprise_id=ENTERPRISE_ID, agent_slug=AGENT_SLUG)
             await s.commit()
         async with AsyncSessionLocal() as s:
             await BudgetRepository(s).release(
                 enterprise_id=ENTERPRISE_ID,
+                agent_slug=AGENT_SLUG,
                 period_start=period,
                 estimate_micros=500_000,
             )
@@ -231,12 +248,13 @@ def test_settling_twice_does_not_drive_the_hold_negative():
     async def go():
         period = await _configure(limit=25 * DOLLAR)
         async with AsyncSessionLocal() as s:
-            await BudgetRepository(s).reserve(enterprise_id=ENTERPRISE_ID)
+            await BudgetRepository(s).reserve(enterprise_id=ENTERPRISE_ID, agent_slug=AGENT_SLUG)
             await s.commit()
         for _ in range(2):
             async with AsyncSessionLocal() as s:
                 await BudgetRepository(s).settle(
                     enterprise_id=ENTERPRISE_ID,
+                    agent_slug=AGENT_SLUG,
                     period_start=period,
                     estimate_micros=500_000,
                     actual_micros=100_000,
@@ -331,7 +349,7 @@ def test_pressure_ranks_by_share_of_cap_not_absolute_spend():
         async with AsyncSessionLocal() as s:
             repo = BudgetRepository(s)
             for eid, limit, spent in plan:
-                row = await repo.get_or_create(enterprise_id=eid)
+                row = await repo.get_or_create(enterprise_id=eid, agent_slug=AGENT_SLUG)
                 row.limit_micros, row.spent_micros = limit, spent
             await s.commit()
 

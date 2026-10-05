@@ -312,13 +312,76 @@ async def send_message(
             headers={"Retry-After": str(retry_after)},
         )
 
-    # Enterprise spend cap. A hold is placed before the turn runs because the
+    clickpost_client = getattr(request.app.state, "clickpost_client", None)
+    enterprise_name = body.enterprise_name if body.enterprise_name else None
+    username = body.username if body.username else None
+    raw_message = body.message
+    display_message = raw_message.strip()
+
+    system_prompt = SPEC.build_system_prompt()
+    context_note = SPEC.build_context_note(
+        enterprise_id=enterprise_id,
+        message_time=body.message_time,
+        enterprise_name=enterprise_name,
+        username=username,
+    )
+    runner = AgentRunner(
+        clickpost_client=clickpost_client,
+        build_tools=SPEC.build_tools,
+        agent_slug=SPEC.slug,
+        runtime=SPEC.runtime,
+        presentation=SPEC.presentation,
+        tool_groups=SPEC.tool_groups,
+        output_filter=SPEC.output_filter,
+    )
+    # Ownership / existence check up front so existing-but-unowned conversations
+    # get a real 404 instead of a 200 stream carrying an error event. The replay
+    # history loaded here (completed turns only) is what the agent loop sees.
+    # It must stay above the budget hold below: anything that raises between
+    # `reserve` and the stream strands the hold until the month rolls over.
+    is_new_conversation = body.conversation_id is None
+    async with AsyncSessionLocal() as session:
+        repo = ConversationRepository(session)
+        if body.conversation_id:
+            try:
+                requested_id = uuid.UUID(body.conversation_id)
+            except ValueError:
+                raise BadRequestError("Invalid conversation_id")
+            conversation = await repo.get_owned(
+                requested_id,
+                user_id=user_id,
+                enterprise_id=enterprise_id,
+                internal_user_id=owner_internal_user_id,
+                is_internal_user=owner_is_internal_user,
+            )
+            if conversation is None:
+                raise NotFoundError("Conversation not found")
+            conversation_id = str(conversation.id)
+            messages = await repo.load_messages(conversation.id)
+        else:
+            conversation_id = str(uuid.uuid4())
+            messages = []
+
+    human_kwargs: dict = {
+        "message_time": body.message_time or utc_now_iso_ms(),
+    }
+
+    human_message = HumanMessage(
+        content=display_message,
+        additional_kwargs=human_kwargs,
+    )
+
+    # enterprise spend cap, hold is placed before the turn runs because the
     # real cost is not known until it finishes; it is released and replaced with
     # the measured figure at settlement. Internal support activity is recorded
     # against the enterprise but never charged to it, so it takes no hold.
     #
-    # This is a no-op for any enterprise with enforcement_enabled false, which is
-    # every enterprise until someone flips the flag.
+    # with enforcement_enabled false the hold is still placed and settled, it
+    # just never refuses - so a leaked hold is invisible until the flag flips.
+    #
+    # placed last, after every check that can refuse the request, so the only
+    # thing left between here and the stream's settle-or-release is returning
+    # the response.
     budget_state: BudgetState | None = None
     if not is_internal_user:
         async with AsyncSessionLocal() as session:
@@ -368,59 +431,6 @@ async def send_message(
                 },
                 headers={"Retry-After": str(retry_after)},
             )
-
-    clickpost_client = getattr(request.app.state, "clickpost_client", None)
-    enterprise_name = body.enterprise_name if body.enterprise_name else None
-    username = body.username if body.username else None
-    raw_message = body.message
-    display_message = raw_message.strip()
-
-    system_prompt = SPEC.build_system_prompt()
-    context_note = SPEC.build_context_note(
-        enterprise_id=enterprise_id,
-        message_time=body.message_time,
-        enterprise_name=enterprise_name,
-        username=username,
-    )
-    runner = AgentRunner(
-        clickpost_client=clickpost_client,
-        build_tools=SPEC.build_tools,
-        agent_slug=SPEC.slug,
-        runtime=SPEC.runtime,
-        presentation=SPEC.presentation,
-        tool_groups=SPEC.tool_groups,
-        output_filter=SPEC.output_filter,
-    )
-    # Ownership / existence check up front so existing-but-unowned conversations
-    # get a real 404 instead of a 200 stream carrying an error event. The replay
-    # history loaded here (completed turns only) is what the agent loop sees.
-    is_new_conversation = body.conversation_id is None
-    async with AsyncSessionLocal() as session:
-        repo = ConversationRepository(session)
-        if body.conversation_id:
-            conversation = await repo.get_owned(
-                uuid.UUID(body.conversation_id),
-                user_id=user_id,
-                enterprise_id=enterprise_id,
-                internal_user_id=owner_internal_user_id,
-                is_internal_user=owner_is_internal_user,
-            )
-            if conversation is None:
-                raise NotFoundError("Conversation not found")
-            conversation_id = str(conversation.id)
-            messages = await repo.load_messages(conversation.id)
-        else:
-            conversation_id = str(uuid.uuid4())
-            messages = []
-
-    human_kwargs: dict = {
-        "message_time": body.message_time or utc_now_iso_ms(),
-    }
-
-    human_message = HumanMessage(
-        content=display_message,
-        additional_kwargs=human_kwargs,
-    )
     messages.append(human_message)
 
     async def event_stream():

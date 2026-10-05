@@ -26,7 +26,7 @@ DEFAULT_EXTRA_TOKEN_COUNT_REQUEST = 0
 MIN_RANDOM_FACTOR = 0.1
 MAX_RANDOM_FACTOR = 1.0
 
-CUSTOM_CHECK_ENTERPRISE_IDS = [983809,281989,982598,281991,982385,36,180641] # extend tokens for TMWR and USPL(36) and discoverpilgrim
+CUSTOM_CHECK_ENTERPRISE_IDS = [983809,281989,982598,281991,982385,36,180641,74] # extend tokens for TMWR, USPL(36), discoverpilgrim and tata-1mg
 TOKEN_EXTEND_AGAINST_USERID = [1013643] #token extent for pawan-tatacliq
 # INCREASE_TOKEN_LIMIT  = (datetime.now()>datetime(2026, 9, 2) and datetime.now()<datetime(2026, 9, 9)) # Token limit increase from 2nd sept to 9th sept
 EXTRA_TOKENS_START_DATE = datetime(2026,9,2)

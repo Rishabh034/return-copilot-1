@@ -1,17 +1,13 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import DateTime, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db import Base
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+from app.db import Base, utc_now
 
 
 class AgentAdmin(Base):
@@ -59,7 +55,7 @@ class AgentAdmin(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     granted_by: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utc_now
+        DateTime(timezone=True), nullable=False, default=utc_now
     )
     revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

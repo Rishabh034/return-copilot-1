@@ -5,7 +5,6 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from langchain_core.messages import AIMessage, HumanMessage
@@ -21,6 +20,7 @@ from app.core.runtime.runner import AgentRunner
 from app.core.runtime.tool_results import tool_result_store
 from app.core.integrations.integration_api_key_model import IntegrationApiKey
 from app.core.integrations.integration_request_log_model import IntegrationRequestLog
+from app.core.billing.budget_repo import seconds_until
 from app.core.repositories import (
     IntegrationKeyRepository,
     IntegrationLogRepository,
@@ -205,7 +205,7 @@ async def query(
                 "remaining_micros": budget.remaining_micros,
                 "period_end": budget.period_end.isoformat(),
             },
-            headers={"Retry-After": str(_seconds_until(budget.period_end))},
+            headers={"Retry-After": str(seconds_until(budget.period_end))},
         )
 
     runner = AgentRunner(
@@ -263,18 +263,6 @@ async def query(
         reasoning=result.reasoning or None,
         tools_used=result.tools_used,
         usage=result.usage,
-    )
-
-
-def _seconds_until(period_end) -> int:
-    return max(
-        0,
-        int(
-            (
-                datetime.combine(period_end, datetime.min.time(), timezone.utc)
-                - datetime.now(timezone.utc)
-            ).total_seconds()
-        ),
     )
 
 

@@ -8,14 +8,6 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# Existing production Clickpost endpoints reused by the RR Log Analyst (read-only,
-# Token auth). We reuse these rather than bespoke endpoints so we don't have to
-# revalidate new APIs. See clickpost:
-#   - clickpost/views/request_logs/request_logs_view.py (RequestLogs)
-#   - dashboard/views/dashboard_selector_view.py (EnterpriseRecsInclusionFiltersConfigAPI)
-#   - dashboard/views/... (EnterpriseRecommendationFlowConfig — selector-recs-flow-config)
-#   - dashboard/views/dashboard_selector_view.py (EnterpriseLoadDistribution*ConfigAPI)
-#   - signup/views/account_details.py (CourierPartnerAccountDetailView)
 _RR_LOG_PATH = "/api/v2/clickpost/request_logs_v2"
 _TRACK_ORDER_SHIPMENT_DETAILS_PATH = "/api/v1/dashboard/track-order-shipment-details/"
 
@@ -27,7 +19,6 @@ _COURIER_PARTNERS_PATH = "/api/v1/dashboard/courier_partners/"
 _RECOMMENDATION_CONFIG_PATH = "/api/v1/selector-recs-flow-config"
 _RECOMMENDATION_API_PATH = "/api/v1/recommendation_api/"
 _ACTIVITY_LOG_PATH = "/dashboard/api/v1/activity-log"
-_ACTIVE_REPORTS_METADATA_PATH = "/api/v1/reports/active-reports-metadata"
 _REQUEST_USER_DETAIL_PATH = "/api/v1/request_user_detail"
 
 _LOAD_DISTRIBUTION_CONFIG_PATH = "/api/v1/selector-load-distribution-config"
@@ -128,16 +119,33 @@ class ClickpostClient:
 
     # -- internal helpers ---------------------------------------------------
 
-    async def _get(self, path: str, auth: ClickpostAuth, params: dict[str, Any]) -> Any:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        auth: ClickpostAuth,
+        *,
+        params: dict[str, Any] | None = None,
+        json_body: Any = None,
+        empty_body: Any = None,
+    ) -> Any:
+        """Send one request and unwrap Clickpost's response envelope.
+
+        `empty_body` is returned as-is when the server answers with no content
+        (the activity-log endpoint does this for an empty page); leave it None
+        for endpoints that always return JSON.
+        """
         url = f"{self._base_url}{path}"
         # Drop None-valued params so we don't send empty query keys.
-        clean = {k: v for k, v in params.items() if v is not None}
+        clean = {k: v for k, v in (params or {}).items() if v is not None}
         clean.update(auth.params)
-        logger.debug("Clickpost GET %s params=%s", url, clean)
+        logger.debug("Clickpost %s %s params=%s", method, url, clean)
         # The credential authenticates + scopes the request; forward it as-is.
-        resp = await self._client.get(
+        resp = await self._client.request(
+            method,
             url,
             params=clean,
+            json=json_body,
             headers=auth.headers or None,
         )
 
@@ -156,7 +164,13 @@ class ClickpostClient:
         except httpx.HTTPStatusError as e:
             raise ClickpostAPIError(f"Clickpost {path} failed: HTTP {resp.status_code}") from e
 
-        data = resp.json()
+        if empty_body is not None and not resp.content.strip():
+            return empty_body
+        try:
+            data = resp.json()
+        except ValueError as e:
+            raise ClickpostAPIError(f"Clickpost {path} returned a non-JSON response") from e
+
         logger.info("Clickpost response for %s: auth=%s status=%s meta=%s",
                     path, auth, resp.status_code,
                     data.get("meta") if isinstance(data, dict) else "non-dict")
@@ -173,47 +187,11 @@ class ClickpostClient:
                 )
         return data
 
+    async def _get(self, path: str, auth: ClickpostAuth, params: dict[str, Any]) -> Any:
+        return await self._request("GET", path, auth, params=params)
+
     async def _post(self, path: str, json_body: Any, *, auth: ClickpostAuth) -> Any:
-        """POST variant of _get."""
-        url = f"{self._base_url}{path}"
-        logger.debug("Clickpost POST %s", url)
-        resp = await self._client.post(
-            url,
-            json=json_body,
-            params=auth.params,
-            headers=auth.headers or None,
-        )
-
-        if resp.status_code in (401, 403):
-            raise ClickpostPermissionError(
-                f"Authentication failed for {path} (HTTP {resp.status_code}). "
-                "Check the API key or token."
-            )
-        try:
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            raise ClickpostAPIError(
-                f"Clickpost {path} failed: HTTP {resp.status_code}"
-            ) from e
-
-        data = resp.json()
-        logger.info(
-            "Clickpost POST response for %s: status=%s meta=%s",
-            path,
-            resp.status_code,
-            data.get("meta") if isinstance(data, dict) else "non-dict",
-        )
-        if isinstance(data, dict):
-            meta = data.get("meta")
-            if isinstance(meta, dict) and meta.get("success") is False:
-                message = (
-                    meta.get("message") or data.get("error") or "Clickpost request failed"
-                )
-                raise ClickpostAPIError(
-                    f"Clickpost {path}: {message}",
-                    meta_status=meta.get("status"),
-                )
-        return data
+        return await self._request("POST", path, auth, json_body=json_body)
 
     # -- RR logs ------------------------------------------------------------
 
@@ -251,48 +229,27 @@ class ClickpostClient:
             auth=auth,
         )
 
-    async def get_rr_log(self, auth: ClickpostAuth, reference_number: str) -> dict:
-        """Fetch the recommendation/allocation log for a single shipment.
+    async def _get_request_log(
+        self, auth: ClickpostAuth, reference_number: str, service_id: int
+    ) -> dict:
+        """Fetch the stored request/response envelope for one shipment.
 
-        Reuses the request_logs endpoint for the Recommendation service; it
-        returns the stored request/response envelope. Note: this endpoint only
-        retains roughly the last 7 days of logs.
+        Reuses the request_logs endpoint, keyed by service. It only retains
+        roughly the last 7 days of logs.
         """
         return await self._get(
             _RR_LOG_PATH,
             auth,
-            {
-                "service_id": _RECOMMENDATION_SERVICE_ID,
-                "reference_number": reference_number,
-            },
+            {"service_id": service_id, "reference_number": reference_number},
         )
+
+    async def get_rr_log(self, auth: ClickpostAuth, reference_number: str) -> dict:
+        """Fetch the recommendation/allocation log for a single shipment."""
+        return await self._get_request_log(auth, reference_number, _RECOMMENDATION_SERVICE_ID)
 
     async def get_order_creation_log(self, auth: ClickpostAuth, reference_number: str) -> dict:
-        """Fetch the recommendation/allocation log for a single shipment.
-
-        Reuses the request_logs endpoint for the Recommendation service; it
-        returns the stored request/response envelope. Note: this endpoint only
-        retains roughly the last 7 days of logs.
-        """
-        return await self._get(
-            _RR_LOG_PATH,
-            auth,
-            {
-                "service_id": _ORDER_CREATION_SERVICE_ID,
-                "reference_number": reference_number,
-            },
-        )
-
-    async def get_enterprise_metadata(self, auth: ClickpostAuth) -> dict:
-        """List enterprises (id + name) from active-reports-metadata.
-
-        Reuses GET /api/v1/reports/active-reports-metadata?filters=enterprise.
-        """
-        return await self._get(
-            _ACTIVE_REPORTS_METADATA_PATH,
-            auth,
-            {"filters": "enterprise"},
-        )
+        """Fetch the order-creation log for a single shipment."""
+        return await self._get_request_log(auth, reference_number, _ORDER_CREATION_SERVICE_ID)
 
     async def get_request_user_detail(self, auth: ClickpostAuth) -> dict:
         """Resolve a credential to the enterprise it belongs to.
@@ -334,18 +291,13 @@ class ClickpostClient:
             {"rule_type": rule_type},
         )
 
-    async def get_rule(self, auth: ClickpostAuth, rule_id: str) -> Any:
-        """Fetch all rules for the enterprise (caller filters by id).
+    async def list_all_rules(self, auth: ClickpostAuth) -> Any:
+        """Fetch every rule for the enterprise, regardless of type.
 
         The selector-filters-config endpoint filters by `rule_type` only, not by
-        id, so we fetch the full set (no rule_type) and let the tool pick out the
-        matching rule id.
+        id, so callers fetch the full set and pick out the rule they need.
         """
-        return await self._get(
-            _RULES_CONFIG_PATH,
-            auth,
-            {},
-        )
+        return await self._get(_RULES_CONFIG_PATH, auth, {})
 
     # -- accounts -----------------------------------------------------------
 
@@ -401,46 +353,19 @@ class ClickpostClient:
         page: int = 1,
     ) -> Any:
         """Fetch one page of dashboard activity logs (GET /dashboard/api/v1/activity-log)."""
-        url = f"{self._base_url}{_ACTIVITY_LOG_PATH}"
-        params = {
-            "start_date": start_date,
-            "end_date": end_date,
-            "action_taken": action_taken,
-            "page_size": page_size,
-            "page": page,
-        }
-        params.update(auth.params)
-        logger.debug("Clickpost GET %s params=%s", url, params)
-        resp = await self._client.get(url, params=params, headers=auth.headers or None)
-
-        if resp.status_code in (401, 403):
-            raise ClickpostPermissionError(
-                f"Authentication failed for activity-log (HTTP {resp.status_code})."
-            )
-        try:
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            raise ClickpostAPIError(
-                f"Clickpost activity-log failed: HTTP {resp.status_code}"
-            ) from e
-
-        if not resp.content.strip():
-            return {"data": [], "totalCount": 0, "pageSize": page_size}
-
-        try:
-            data = resp.json()
-        except ValueError as e:
-            raise ClickpostAPIError(
-                "Clickpost activity-log returned a non-JSON response"
-            ) from e
-
-        if isinstance(data, dict):
-            meta = data.get("meta")
-            if isinstance(meta, dict) and meta.get("success") is False:
-                message = meta.get("message") or data.get("error") or "Clickpost request failed"
-                raise ClickpostAPIError(f"Clickpost activity-log: {message}")
-        return data
-
+        return await self._request(
+            "GET",
+            _ACTIVITY_LOG_PATH,
+            auth,
+            params={
+                "start_date": start_date,
+                "end_date": end_date,
+                "action_taken": action_taken,
+                "page_size": page_size,
+                "page": page,
+            },
+            empty_body={"data": [], "totalCount": 0, "pageSize": page_size},
+        )
 
     # -- serviceability ------------------------------------------------------
     

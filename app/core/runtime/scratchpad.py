@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage
 from langchain_anthropic import ChatAnthropic
 
 from app.clients.observability import langchain_trace_config
+from app.core.content import message_text
 from app.config import settings
 from app.core.runtime.context import merge_usage, serialize_usage
 
@@ -139,18 +140,6 @@ def build_compact_envelope(
     return envelope
 
 
-def _extract_text(content: str | list) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "".join(
-            block.get("text", "")
-            for block in content
-            if isinstance(block, dict) and block.get("type") == "text"
-        )
-    return ""
-
-
 def _args_summary(args: dict[str, Any]) -> str:
     if not args:
         return "no args"
@@ -222,7 +211,7 @@ async def summarize_raw_data_parts(
 
     batch_summaries: list[str] = list(raw_data_parts)
     for index, response in zip(llm_indexes, responses):
-        batch_summaries[index] = _extract_text(response.content).strip()
+        batch_summaries[index] = message_text(response.content).strip()
         usage = serialize_usage(response.usage_metadata)
         total_usage = merge_usage(total_usage, usage)
 

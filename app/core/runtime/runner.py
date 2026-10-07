@@ -17,6 +17,7 @@ from pydantic import ValidationError
 
 from app.clients.clickpost import ClickpostAPIError, ClickpostAuth, ClickpostPermissionError
 from app.clients.databricks import DatabricksQueryError, get_databricks_client
+from app.core.content import message_text, message_thinking
 from app.clients.llm import create_chat_model, create_secondary_chat_model
 from app.clients.observability import langchain_trace_config, mark_span_error, otel_span
 from app.config import settings
@@ -54,33 +55,6 @@ from app.utilities.alerts import SlackAlertTool, tool_errors_slack_update
 logger = logging.getLogger(__name__)
 
 BuildTools = Callable[[ToolContext], list[BaseTool]]
-
-
-
-def _extract_text_delta(chunk_content: str | list) -> str | None:
-    if isinstance(chunk_content, str):
-        return chunk_content or None
-    if isinstance(chunk_content, list):
-        parts = [
-            block.get("text", "")
-            for block in chunk_content
-            if isinstance(block, dict) and block.get("type") == "text"
-        ]
-        joined = "".join(parts)
-        return joined or None
-    return None
-
-
-def _extract_thinking_delta(chunk_content: str | list) -> str | None:
-    if isinstance(chunk_content, list):
-        parts = [
-            block.get("thinking", "")
-            for block in chunk_content
-            if isinstance(block, dict) and block.get("type") == "thinking"
-        ]
-        joined = "".join(parts)
-        return joined or None
-    return None
 
 
 
@@ -149,12 +123,7 @@ def _filter_content(content: str | list, output_filter: OutputFilter) -> str | l
     if not isinstance(content, list):
         return content
 
-    joined = "".join(
-        block.get("text", "")
-        for block in content
-        if isinstance(block, dict) and block.get("type") == "text"
-    )
-    filtered = output_filter.filter_final(joined)
+    filtered = output_filter.filter_final(message_text(content))
 
     out: list = []
     placed = False
@@ -177,8 +146,7 @@ def _latest_user_text(messages: list[BaseMessage]) -> str | None:
             if isinstance(content, str):
                 return content
             if isinstance(content, list):
-                text = _extract_text_delta(content)
-                return text
+                return message_text(content) or None
     return None
 
 
@@ -338,10 +306,10 @@ class AgentRunner:
                 async for chunk in runnable.astream(
                     llm_input, config=langchain_trace_config(conversation_id, agent_slug=self.agent_slug)
                 ):
-                    thinking_delta = _extract_thinking_delta(chunk.content)
+                    thinking_delta = message_thinking(chunk.content)
                     if thinking_delta:
                         yield ("thinking_delta", {"delta": thinking_delta})
-                    text_delta = _extract_text_delta(chunk.content)
+                    text_delta = message_text(chunk.content)
                     if text_delta:
                         emit = stream_filter.push(text_delta)
                         if emit:

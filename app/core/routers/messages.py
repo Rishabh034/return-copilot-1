@@ -29,8 +29,10 @@ from app.core.auth.actor import (
     resolve_body_internal_actor,
     resolve_internal_actor,
 )
-from app.core.conversations.store import _extract_thinking, utc_now_iso_ms
+from app.core.content import message_thinking
+from app.core.conversations.store import utc_now_iso_ms
 from app.core.billing.budget_block_event_model import BudgetBlockEvent
+from app.core.billing.budget_repo import seconds_until
 from app.core.conversations.message_model import Message
 from app.core.repositories import (
     BudgetRepository,
@@ -405,17 +407,7 @@ async def send_message(
             # itself in a few hours, this one needs an admin to raise the cap or
             # the month to end. The client cannot say the right thing to the
             # user without being able to tell them apart.
-            retry_after = max(
-                0,
-                int(
-                    (
-                        datetime.combine(
-                            budget_state.period_end, datetime.min.time(), timezone.utc
-                        )
-                        - datetime.now(timezone.utc)
-                    ).total_seconds()
-                ),
-            )
+            retry_after = seconds_until(budget_state.period_end)
             raise HTTPException(
                 status_code=429,
                 detail={
@@ -607,7 +599,7 @@ async def send_message(
                             )
                             usage_settled = True
                             thinking = (
-                                _extract_thinking(last_ai_message.content)
+                                message_thinking(last_ai_message.content)
                                 if last_ai_message is not None
                                 else None
                             )

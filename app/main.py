@@ -103,14 +103,24 @@ async def lifespan(app: FastAPI):
         base_url=settings.clickpost_base_url,
         timeout=settings.rr_analyst_tool_timeout,
     )
+    # One instance per service an enabled agent declared. Built here so a tool
+    # reads context.clients[name] and no agent edits this lifespan by hand.
+    app.state.shared_clients = {}
     log_uploader = None
-    if settings.log_to_file:
-        log_uploader = S3LogUploader()
-        log_uploader.start()
     try:
+        for spec in registry.enabled():
+            for name, factory in spec.clients.items():
+                app.state.shared_clients.setdefault(name, factory())
+        if settings.log_to_file:
+            log_uploader = S3LogUploader()
+            log_uploader.start()
         yield
     finally:
         await app.state.clickpost_client.aclose()
+        for client in getattr(app.state, "shared_clients", {}).values():
+            close = getattr(client, "aclose", None)
+            if close is not None:
+                await close()
         if log_uploader:
             # last so shutdown logs from the lines above still make the flush
             await log_uploader.aclose()

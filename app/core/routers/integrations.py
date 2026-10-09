@@ -208,6 +208,7 @@ async def query(
             headers={"Retry-After": str(_seconds_until(budget.period_end))},
         )
 
+    shared_clients = getattr(request.app.state, "shared_clients", {})
     runner = AgentRunner(
         clickpost_client=client,
         build_tools=SPEC.build_tools,
@@ -216,6 +217,7 @@ async def query(
         presentation=SPEC.presentation,
         tool_groups=SPEC.tool_groups,
         output_filter=SPEC.output_filter,
+        clients={name: shared_clients[name] for name in SPEC.clients if name in shared_clients},
     )
     events = runner.handle_message_stream(
         messages=[HumanMessage(content=message)],

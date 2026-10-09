@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, AsyncGenerator, Callable
+from typing import Any, AsyncGenerator, Callable, Mapping
 
 from langchain_core.messages import (
     AIMessage,
@@ -251,8 +251,12 @@ class AgentRunner:
         presentation: Presentation = DEFAULT_PRESENTATION,
         tool_groups: dict[str, ToolGroupPolicy] | None = None,
         output_filter: OutputFilter = NULL_FILTER,
+        clients: Mapping[str, Any] | None = None,
     ):
         self.clickpost_client = clickpost_client
+        # Extra services this agent declared on its spec. The Clickpost client
+        # stays the one the platform constructed; an agent cannot replace it.
+        self._clients = dict(clients or {})
         # Tags this agent's traces so Langfuse can separate them by agent.
         self.agent_slug = agent_slug
         # The agent's tools, supplied by its spec. The loop must never import an
@@ -279,9 +283,11 @@ class AgentRunner:
     ) -> AsyncGenerator[tuple[str, dict[str, Any]], None]:
         """Agentic loop using ChatAnthropic.bind_tools(). Yields SSE event tuples."""
 
+        clients = dict(self._clients)
+        clients[CLICKPOST] = self.clickpost_client
         tool_context = ToolContext(
             auth=auth,
-            clients={CLICKPOST: self.clickpost_client},
+            clients=clients,
             conversation_id=conversation_id,
         )
         tools = self.build_tools(tool_context)

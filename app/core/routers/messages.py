@@ -313,6 +313,7 @@ async def send_message(
         )
 
     clickpost_client = getattr(request.app.state, "clickpost_client", None)
+    shared_clients = getattr(request.app.state, "shared_clients", {})
     enterprise_name = body.enterprise_name if body.enterprise_name else None
     username = body.username if body.username else None
     raw_message = body.message
@@ -333,6 +334,7 @@ async def send_message(
         presentation=SPEC.presentation,
         tool_groups=SPEC.tool_groups,
         output_filter=SPEC.output_filter,
+        clients={name: shared_clients[name] for name in SPEC.clients if name in shared_clients},
     )
     # Ownership / existence check up front so existing-but-unowned conversations
     # get a real 404 instead of a 200 stream carrying an error event. The replay

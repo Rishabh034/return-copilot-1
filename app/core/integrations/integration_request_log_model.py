@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
@@ -16,11 +16,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db import Base
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+from app.db import Base, utc_now
 
 
 class IntegrationRequestLog(Base):
@@ -114,5 +110,5 @@ class IntegrationRequestLog(Base):
     latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utc_now, index=True
+        DateTime(timezone=True), nullable=False, default=utc_now, index=True
     )

@@ -14,7 +14,7 @@ from langchain_core.messages import (
     messages_from_dict,
 )
 
-from app.core.conversations.store import _extract_thinking
+from app.core.content import message_text, message_thinking
 from app.core.runtime.tool_results import (
     stored_tool_result_from_dict,
     stored_tool_result_to_dict,
@@ -33,19 +33,6 @@ def langchain_role(message: BaseMessage) -> str:
     if isinstance(message, ToolMessage):
         return "tool"
     return message.type
-
-
-def _text_content(content: str | list) -> str | None:
-    if isinstance(content, str):
-        return content or None
-    if isinstance(content, list):
-        text = "".join(
-            block.get("text", "")
-            for block in content
-            if isinstance(block, dict) and block.get("type") == "text"
-        )
-        return text or None
-    return None
 
 
 def _resolve_tool_result(
@@ -149,7 +136,7 @@ def message_to_row(
         seq=seq,
         role=role,
         status=status,
-        content=_text_content(message.content),
+        content=message_text(message.content) or None,
         tool_call_id=tool_call_id,
         tool_name=tool_name,
         tool_args=tool_args,
@@ -213,13 +200,13 @@ def rows_to_transcript(
                 )
                 message = None
             if message is not None:
-                text = _text_content(message.content)
+                text = message_text(message.content) or None
                 if text:
                     content = text
                 ts = message.additional_kwargs.get("message_time")
                 message_time = ts if isinstance(ts, str) else None
                 if isinstance(message, AIMessage):
-                    thinking = _extract_thinking(message.content)
+                    thinking = message_thinking(message.content)
                     reasoning = thinking or None
                     if message.tool_calls:
                         tool_calls = [

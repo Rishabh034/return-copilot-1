@@ -25,8 +25,8 @@ from app.db import get_db
 from app.core.auth.agent_token import (
     AgentAuthError,
     AuthContext,
-    resolve_identity,
     resolve_identity_context,
+    resolve_identity_from_query,
 )
 from app.core.auth.actor import resolve_internal_user_id, resolve_is_internal_user
 from app.core.repositories import UserTokenRepository
@@ -60,18 +60,6 @@ router = APIRouter()
 # predate multi-agent budgets don't know to send one, so default to the one
 # agent that existed before this split, matching the column's own server_default.
 DEFAULT_AGENT_SLUG = "allocation"
-
-
-async def _resolve_identity_query(
-    user_id: int,
-    enterprise_id: int,
-    authorization: str | None = Header(default=None),
-) -> tuple[int, int, str]:
-    return await resolve_identity(
-        user_id=user_id,
-        enterprise_id=enterprise_id,
-        authorization=authorization,
-    )
 
 
 async def _resolve_identity_query_ctx(
@@ -246,7 +234,7 @@ def _token_window(row) -> TokenWindow | None:
 
 @router.get("/me", response_model=MyUsageResponse)
 async def my_usage(
-    identity: tuple[int, int, str] = Depends(_resolve_identity_query),
+    identity: tuple[int, int, str] = Depends(resolve_identity_from_query),
     internal_user_id: str | None = None,
     is_internal_user: bool = False,
     agent_slug: str = Query(

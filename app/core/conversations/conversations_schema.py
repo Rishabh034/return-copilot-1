@@ -33,15 +33,6 @@ class TranscriptMessage(BaseModel):
     created_at: datetime
 
 
-class ConversationTranscript(BaseModel):
-    id: str
-    created_at: datetime
-    updated_at: datetime
-    title: str | None = None
-    is_internal: bool = False
-    messages: list[TranscriptMessage] = Field(default_factory=list)
-
-
 class ConversationCreateRequest(BaseModel):
     user_id: int = Field(..., description="Clickpost dashboard user id")
     enterprise_id: int = Field(..., description="Clickpost enterprise id")

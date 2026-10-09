@@ -47,6 +47,12 @@ def period_bounds(now: datetime | None = None) -> tuple[date, date]:
     return start, end
 
 
+def seconds_until(period_end: date) -> int:
+    """Whole seconds from now until the start of `period_end` (UTC), floored at 0."""
+    end = datetime.combine(period_end, datetime.min.time(), timezone.utc)
+    return max(0, int((end - datetime.now(timezone.utc)).total_seconds()))
+
+
 @dataclass(frozen=True)
 class BudgetState:
     """Enough to answer the request and to explain a refusal to the caller."""

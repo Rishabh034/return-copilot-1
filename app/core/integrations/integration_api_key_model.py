@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 
 from sqlalchemy import (
     BigInteger,
@@ -19,7 +19,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db import Base
+from app.db import Base, utc_now
 
 KEY_PREFIX = "cpai_"
 # 32 random bytes, urlsafe-base64 encoded by token_urlsafe -> 43 chars.
@@ -27,10 +27,6 @@ _KEY_ENTROPY_BYTES = 32
 # Enough of the key to recognise it in a log line or the management script,
 # far too little to guess the remaining ~250 bits.
 DISPLAY_PREFIX_CHARS = 12
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def generate_api_key() -> str:
@@ -126,7 +122,7 @@ class IntegrationApiKey(Base):
         Boolean, nullable=False, default=True, server_default="true"
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utc_now
+        DateTime(timezone=True), nullable=False, default=utc_now
     )
     revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

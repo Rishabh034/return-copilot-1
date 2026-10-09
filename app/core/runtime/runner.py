@@ -16,6 +16,7 @@ from langchain_core.tools import BaseTool
 from pydantic import ValidationError
 
 from app.clients.clickpost import ClickpostAPIError, ClickpostAuth, ClickpostPermissionError
+from app.clients.databricks import DatabricksQueryError, get_databricks_client
 from app.clients.llm import create_chat_model, create_secondary_chat_model
 from app.clients.observability import langchain_trace_config, mark_span_error, otel_span
 from app.config import settings
@@ -47,7 +48,7 @@ from app.core.runtime.scratchpad import (
 )
 from app.core.runtime.tool_results import StoredToolResult, tool_result_store
 from app.core.spec import RuntimeSettings
-from app.core.tool_context import CLICKPOST, ToolContext
+from app.core.tool_context import CLICKPOST, DATABRICKS, ToolContext
 from app.utilities.alerts import SlackAlertTool, tool_errors_slack_update
 
 logger = logging.getLogger(__name__)
@@ -202,7 +203,7 @@ async def _invoke_tool(
             error = tool_error(
                 ToolErrorCode.PERMISSION_DENIED, tool_name=tool.name, detail=str(e)
             )
-        except ClickpostAPIError as e:
+        except (ClickpostAPIError, DatabricksQueryError) as e:
             caught_exc = e
             error = tool_error(ToolErrorCode.UPSTREAM_ERROR, tool_name=tool.name, detail=str(e))
         except ValidationError as e:
@@ -281,7 +282,7 @@ class AgentRunner:
 
         tool_context = ToolContext(
             auth=auth,
-            clients={CLICKPOST: self.clickpost_client},
+            clients={CLICKPOST: self.clickpost_client, DATABRICKS: get_databricks_client()},
             conversation_id=conversation_id,
         )
         tools = self.build_tools(tool_context)

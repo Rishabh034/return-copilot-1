@@ -7,6 +7,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from app import clock
+from app.core.content import message_text, message_thinking
 
 
 def utc_now_iso_ms() -> str:
@@ -20,29 +21,6 @@ def to_iso_ms(dt: datetime) -> str:
         dt = dt.replace(tzinfo=timezone.utc)
     dt = dt.astimezone(timezone.utc)
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
-
-
-def _extract_text(content: str | list) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "".join(
-            block.get("text", "")
-            for block in content
-            if isinstance(block, dict) and block.get("type") == "text"
-        )
-    return ""
-
-
-def _extract_thinking(content: str | list) -> str:
-    """Pull the model's extended-thinking text out of an AI message's content blocks."""
-    if isinstance(content, list):
-        return "".join(
-            block.get("thinking", "")
-            for block in content
-            if isinstance(block, dict) and block.get("type") == "thinking"
-        )
-    return ""
 
 
 def _message_time(message: BaseMessage) -> str | None:
@@ -63,7 +41,7 @@ def to_display_messages(messages: list[BaseMessage]) -> list[dict[str, Any]]:
 
     for message in messages:
         if isinstance(message, HumanMessage):
-            text = _extract_text(message.content)
+            text = message_text(message.content)
             if text:
                 display.append(
                     {
@@ -75,8 +53,8 @@ def to_display_messages(messages: list[BaseMessage]) -> list[dict[str, Any]]:
                 )
         elif isinstance(message, AIMessage):
             message_time = _message_time(message)
-            thinking = _extract_thinking(message.content)
-            text = _extract_text(message.content)
+            thinking = message_thinking(message.content)
+            text = message_text(message.content)
             if text:
                 seq = message.additional_kwargs.get("seq")
                 previous = display[-1] if display else None

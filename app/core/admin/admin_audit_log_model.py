@@ -1,18 +1,14 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import DateTime, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db import Base
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+from app.db import Base, utc_now
 
 
 class AdminAuditLog(Base):
@@ -55,5 +51,5 @@ class AdminAuditLog(Base):
     after: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utc_now
+        DateTime(timezone=True), nullable=False, default=utc_now
     )

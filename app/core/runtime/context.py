@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import BaseMessage, SystemMessage, ToolMessage
 from langchain_core.messages.ai import UsageMetadata
 from langchain_core.messages.utils import count_tokens_approximately
 
@@ -73,21 +73,9 @@ def merge_usage(
     return {field: (left.get(field) or 0) + (right.get(field) or 0) for field in _USAGE_FIELDS}
 
 
-def estimate_tokens(text: str | None) -> int:
-    """Approximate token count for plain text (roles, tool metadata not included)."""
-    if not text:
-        return 0
-    return count_tokens_approximately([HumanMessage(content=text)])
-
-
 def message_token_count(message: BaseMessage) -> int:
     """Approximate token count for a single LangChain message, including tool calls."""
     return count_tokens_approximately([message])
-
-
-def count_conversation_tokens(messages: list[BaseMessage]) -> int:
-    """Approximate total token count for all messages in a stored conversation."""
-    return sum(message_token_count(message) for message in messages)
 
 
 def _compact_tool_message_content(content: str, conversation_id: str) -> str:

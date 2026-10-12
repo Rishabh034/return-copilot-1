@@ -139,7 +139,7 @@ async def _fetch_all_raw_rules(context: ToolContext) -> list[dict]:
         await cached_fetch(
             context,
             ("rules_all",),
-            lambda: context.clickpost_client.get_rule(auth=context.auth, rule_id=""),
+            lambda: context.clickpost_client.list_all_rules(auth=context.auth),
         )
     )
 

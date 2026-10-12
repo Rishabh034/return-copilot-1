@@ -1,23 +1,19 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db import Base
+from app.db import Base, utc_now
 
 _WINDOW_HOURS = 24
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 def _default_reset_at() -> datetime:
-    return _utc_now() + timedelta(hours=_WINDOW_HOURS)
+    return utc_now() + timedelta(hours=_WINDOW_HOURS)
 
 
 class UserToken(Base):
@@ -77,7 +73,7 @@ class UserToken(Base):
     window_start: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        default=_utc_now,
+        default=utc_now,
     )
     reset_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

@@ -176,3 +176,16 @@ async def resolve_identity_context(
         resolve_token(authorization=authorization),
         None,
     )
+
+
+async def resolve_identity_from_query(
+    user_id: int,
+    enterprise_id: int,
+    authorization: str | None = Header(default=None),
+) -> tuple[int, int, str]:
+    """FastAPI dependency: `resolve_identity` for routes that take identity as query params."""
+    return await resolve_identity(
+        user_id=user_id,
+        enterprise_id=enterprise_id,
+        authorization=authorization,
+    )

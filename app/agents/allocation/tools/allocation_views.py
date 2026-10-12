@@ -115,15 +115,6 @@ def compact_allocation_summary(log: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in summary.items() if v is not None}
 
 
-def extract_order(log: dict[str, Any]) -> dict[str, Any]:
-    if "error" in log:
-        return log
-    order = log.get("order")
-    if not order:
-        return {"reference_number": log.get("reference_number"), "error": "No order data in log"}
-    return {"reference_number": log.get("reference_number"), "order": order}
-
-
 def extract_pipeline(
     log: dict[str, Any],
     stage: str,

@@ -24,6 +24,7 @@ from typing import Any, Mapping
 from app.clients.clickpost import ClickpostAuth
 
 CLICKPOST = "clickpost"
+DATABRICKS = "databricks"
 
 
 @dataclass
@@ -51,6 +52,11 @@ class ToolContext:
         real tool would reach production unseen.
         """
         return self.clients.get(CLICKPOST)
+
+    @property
+    def databricks_client(self) -> Any:
+        """Read-only Databricks SQL client (app/clients/databricks.py)."""
+        return self.clients.get(DATABRICKS)
 
     @property
     def raw_fetch_cache(self) -> dict[tuple, Any]:

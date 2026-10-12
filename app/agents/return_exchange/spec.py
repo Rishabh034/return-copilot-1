@@ -19,7 +19,6 @@ _CONFIG_BY_PHRASE = (
     ("store credit", "get_return_refund_config"),
     ("gift card", "get_return_refund_config"),
     ("quality check", "get_qc_door_step_config"),
-    ("non-return", "get_rejection_config"),
     ("warehouse", "get_warehouse_config"),
     ("doorstep", "get_qc_door_step_config"),
     ("refund", "get_return_refund_config"),
@@ -62,4 +61,6 @@ SPEC = AgentSpec(
     output_filter=PII_FILTER,
     tool_groups={"rne_config": ToolGroupPolicy(max_per_turn=1, choose=_choose_config)},
     clients={"return_exchange": _build_client},
+    # Reached through the allocation mount. The chat URL does not change.
+    mounted=False,
 )

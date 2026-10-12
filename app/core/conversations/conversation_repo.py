@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 
 from langchain_core.messages import BaseMessage
@@ -81,6 +82,45 @@ class ConversationRepository:
         )
         return result.scalar_one_or_none()
 
+    async def routing_state(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        user_id: int,
+        enterprise_id: int,
+        internal_user_id: str | None = None,
+        is_internal_user: bool = False,
+        now: datetime | None = None,
+    ) -> tuple[str, bool] | None:
+        """`(agent_slug, has_messages)` for an owned conversation, else None.
+
+        Used by the orchestrator before a turn. Does not load message bodies.
+        """
+        result = await self._session.execute(
+            select(Conversation.agent_slug, func.count(Message.id))
+            .outerjoin(Message, Message.conversation_id == Conversation.id)
+            .where(
+                Conversation.id == conversation_id,
+                Conversation.user_id == user_id,
+                Conversation.enterprise_id == enterprise_id,
+                Conversation.internal_user_id == internal_user_id,
+                Conversation.is_internal_user == is_internal_user,
+                _available_conversation_clause(now),
+            )
+            .group_by(Conversation.agent_slug)
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        return row[0], row[1] > 0
+
+    async def set_agent_slug(self, conversation_id: uuid.UUID, agent_slug: str) -> None:
+        conversation = await self._session.get(Conversation, conversation_id)
+        if conversation is None:
+            return
+        conversation.agent_slug = agent_slug
+        await self._session.flush()
+
     async def exists(self, conversation_id: uuid.UUID) -> bool:
         result = await self._session.execute(
             select(Conversation.id).where(Conversation.id == conversation_id)
@@ -96,7 +136,9 @@ class ConversationRepository:
         is_internal_user: bool = False,
         now: datetime | None = None,
         agent_slug: str,
+        agent_slugs: Sequence[str] | None = None,
     ) -> list[Conversation]:
+        slugs = tuple(agent_slugs) if agent_slugs else (agent_slug,)
         result = await self._session.execute(
             select(Conversation)
             .where(
@@ -104,7 +146,7 @@ class ConversationRepository:
                 Conversation.enterprise_id == enterprise_id,
                 Conversation.internal_user_id == internal_user_id,
                 Conversation.is_internal_user == is_internal_user,
-                Conversation.agent_slug == agent_slug,
+                Conversation.agent_slug.in_(slugs),
                 _available_conversation_clause(now),
             )
             .options(selectinload(Conversation.messages))

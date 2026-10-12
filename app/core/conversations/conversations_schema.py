@@ -61,6 +61,7 @@ class ConversationSummary(BaseModel):
     message_count: int
     title: str | None = None
     preview: str | None = None
+    agent_slug: str | None = None
 
 
 class ConversationDetail(BaseModel):

@@ -154,9 +154,11 @@ def create_app() -> FastAPI:
     async def health():
         return {"status": "ok"}
 
-    # One conversational API per agent, at its own URL. Adding an agent is
-    # adding a directory under app/agents/ — nothing here changes.
+    # One conversational API per mounted agent. An agent with mounted=False
+    # is reached through another agent's routes, so it gets no URL of its own.
     for spec in registry.enabled():
+        if not spec.mounted:
+            continue
         application.include_router(
             build_agent_router(spec),
             prefix=f"/api/{spec.url_prefix}",

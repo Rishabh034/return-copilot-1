@@ -23,7 +23,9 @@ from app.clients.observability import (
 from app.exceptions import AppError, NotFoundError, BadRequestError
 from app.utilities.alerts import alert_slack
 from app.core.request_spec import agent_spec
+from app.core.runtime.orchestrator import choose_agent
 from app.core.runtime.runner import AgentRunner
+from app.core.spec import AgentSpec
 from app.core.runtime.context import merge_usage, serialize_usage
 from app.core.auth.actor import (
     resolve_body_internal_actor,
@@ -47,6 +49,66 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+async def _route_turn(
+    entry: AgentSpec,
+    *,
+    message: str,
+    conversation_id: str | None,
+    user_id: int,
+    enterprise_id: int,
+    is_internal_user: bool,
+    internal_user_id: str | None,
+) -> tuple[AgentSpec, dict[str, int] | None]:
+    """Which agent runs, before quota. A missing conversation is a 404 here."""
+    if not entry.routes:
+        return entry, None
+    locked_slug: str | None = None
+    if conversation_id:
+        try:
+            requested_id = uuid.UUID(conversation_id)
+        except ValueError:
+            raise BadRequestError("Invalid conversation_id")
+        async with AsyncSessionLocal() as session:
+            repo = ConversationRepository(session)
+            state = await repo.routing_state(
+                requested_id,
+                user_id=user_id,
+                enterprise_id=enterprise_id,
+                internal_user_id=internal_user_id,
+                is_internal_user=is_internal_user,
+            )
+            if state is None:
+                raise NotFoundError("Conversation not found")
+            slug, has_messages = state
+        if has_messages:
+            locked_slug = slug
+        else:
+            # Classify after the read commits, so a model call does not sit
+            # inside the database transaction.
+            spec, usage = await choose_agent(entry, message, locked_slug=None)
+            if slug != spec.slug:
+                async with AsyncSessionLocal() as session:
+                    await ConversationRepository(session).set_agent_slug(
+                        requested_id, spec.slug
+                    )
+                    await session.commit()
+            logger.info(
+                "Routed new conversation_id=%s agent=%s",
+                conversation_id,
+                spec.slug,
+            )
+            return spec, usage
+    spec, usage = await choose_agent(entry, message, locked_slug=locked_slug)
+    logger.info(
+        "Routed message agent=%s locked=%s conversation_id=%s",
+        spec.slug,
+        locked_slug,
+        conversation_id,
+    )
+    return spec, usage
+
 
 async def _settle_turn(
     *,
@@ -234,10 +296,9 @@ async def send_message(
     identity: tuple[int, int, str, AuthContext | None] = Depends(_resolve_identity),
 ):
     user_id, enterprise_id, token, auth_ctx = identity
-    # Resolved from the mount this request arrived on, before anything else:
-    # a turn refused by the quota or budget gate below is still that agent's
-    # refusal, and the block event records which one.
-    SPEC = agent_spec(request)
+    # The URL is the entry. When that entry routes several agents, the first
+    # message picks one and quota, budget, and the runner all follow it.
+    entry = agent_spec(request)
     # which conversation list the chat is filed under follows the client's own
     # flags, because that is what GET /conversations/ lists by, filing it under
     # the signed identity instead of hiding it
@@ -252,6 +313,15 @@ async def send_message(
         ctx=auth_ctx,
         body_is_internal_user=body.is_internal_user,
         body_internal_user_id=body.internal_user_id,
+    )
+    SPEC, route_usage = await _route_turn(
+        entry,
+        message=body.message,
+        conversation_id=body.conversation_id,
+        user_id=user_id,
+        enterprise_id=enterprise_id,
+        is_internal_user=owner_is_internal_user,
+        internal_user_id=owner_internal_user_id,
     )
 
     async with AsyncSessionLocal() as session:
@@ -454,7 +524,7 @@ async def send_message(
             completed_secondary_usage: dict[str, int] | None = None
             # Set only on a conversation's first turn; merged into whichever
             # settle path runs so neither can drop it.
-            title_usage: dict[str, int] | None = None
+            title_usage: dict[str, int] | None = route_usage
             usage_settled = False
 
             with trace_span(
@@ -505,11 +575,12 @@ async def send_message(
                         # settlement below so it lands in the ledger like any other
                         # spend, rather than being charged by Anthropic and recorded
                         # nowhere.
-                        title, title_usage = await generate_conversation_title(
+                        title, generated_usage = await generate_conversation_title(
                             user_message=human_message.content,
                             conversation_id=conversation_id,
                             agent_slug=SPEC.slug,
                         )
+                        title_usage = merge_usage(title_usage, generated_usage)
                         if title:
                             conversation.title = title
                             await session.commit()
@@ -615,6 +686,7 @@ async def send_message(
                             )
                             data = {
                                 "conversation_id": conversation_id,
+                                "agent": SPEC.slug,
                                 "usage": data.get("usage"),
                                 "usage_by_iteration": data.get("usage_by_iteration"),
                                 "reasoning": thinking,

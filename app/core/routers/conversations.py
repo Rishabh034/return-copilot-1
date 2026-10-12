@@ -108,15 +108,17 @@ async def list_conversations(
         if internal_user_id is None:
             raise BadRequestError("Internal user ID is required")
    
+    spec = agent_spec(request)
     repo = ConversationRepository(session)
     conversations = await repo.list_for_user(
         user_id=user_id,
         enterprise_id=enterprise_id,
         internal_user_id=internal_user_id,
         is_internal_user=is_internal_user,
-        # Each agent lists only its own threads, so a second agent's history
-        # never appears in this one's sidebar.
-        agent_slug=agent_spec(request).slug,
+        # A mount that routes several agents lists every thread it can open.
+        # A mount with no routes still lists only its own.
+        agent_slug=spec.slug,
+        agent_slugs=spec.routes or None,
     )
     logger.info(
         "Listed conversations user_id=%s enterprise_id=%s internal_user_id=%s is_internal_user=%s count=%s",
@@ -143,6 +145,7 @@ async def list_conversations(
                 message_count=len(display_messages),
                 title=conversation.title,
                 preview=preview,
+                agent_slug=conversation.agent_slug,
             )
         )
 

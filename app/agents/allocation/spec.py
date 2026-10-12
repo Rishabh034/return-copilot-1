@@ -21,4 +21,7 @@ SPEC = AgentSpec(
     build_context_note=build_context_note,
     runtime=RuntimeSettings.from_settings(),
     presentation=PRESENTATION,
+    # The dashboard keeps calling /api/rr-log-analyst/. This mount is the
+    # entry for both agents; the orchestrator picks one per new conversation.
+    routes=("allocation", "return_exchange"),
 )

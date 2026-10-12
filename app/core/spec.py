@@ -99,11 +99,3 @@ class AgentSpec:
     than reaching into the loop."""
     clients: dict[str, Callable[[], Any]] = field(default_factory=dict)
     enabled: bool = True
-    mounted: bool = True
-    """False when this agent has no URL of its own and is only reached through
-    another agent's `routes`. It still gets a client and a slug."""
-
-    routes: tuple[str, ...] = ()
-    """When non-empty, this mount is the single chat entry for these agents.
-    The orchestrator picks one for a new conversation. Later messages stay on
-    the agent stamped on that conversation."""

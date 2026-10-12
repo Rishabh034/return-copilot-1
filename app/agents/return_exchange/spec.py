@@ -61,6 +61,4 @@ SPEC = AgentSpec(
     output_filter=PII_FILTER,
     tool_groups={"rne_config": ToolGroupPolicy(max_per_turn=1, choose=choose_config)},
     clients={"return_exchange": build_client},
-    # Reached through the allocation mount. The chat URL does not change.
-    mounted=False,
 )

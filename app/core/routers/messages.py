@@ -23,16 +23,16 @@ from app.clients.observability import (
 from app.exceptions import AppError, NotFoundError, BadRequestError
 from app.utilities.alerts import alert_slack
 from app.core.request_spec import agent_spec
-from app.core.runtime.orchestrator import choose_agent
 from app.core.runtime.runner import AgentRunner
-from app.core.spec import AgentSpec
 from app.core.runtime.context import merge_usage, serialize_usage
 from app.core.auth.actor import (
     resolve_body_internal_actor,
     resolve_internal_actor,
 )
-from app.core.conversations.store import _extract_thinking, utc_now_iso_ms
+from app.core.content import message_thinking
+from app.core.conversations.store import utc_now_iso_ms
 from app.core.billing.budget_block_event_model import BudgetBlockEvent
+from app.core.billing.budget_repo import seconds_until
 from app.core.conversations.message_model import Message
 from app.core.repositories import (
     BudgetRepository,
@@ -49,65 +49,6 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-async def route_turn(
-    entry: AgentSpec,
-    *,
-    message: str,
-    conversation_id: str | None,
-    user_id: int,
-    enterprise_id: int,
-    is_internal_user: bool,
-    internal_user_id: str | None,
-) -> tuple[AgentSpec, dict[str, int] | None]:
-    """Which agent runs, before quota. A missing conversation is a 404 here."""
-    if not entry.routes:
-        return entry, None
-    locked_slug: str | None = None
-    if conversation_id:
-        try:
-            requested_id = uuid.UUID(conversation_id)
-        except ValueError:
-            raise BadRequestError("Invalid conversation_id")
-        async with AsyncSessionLocal() as session:
-            repo = ConversationRepository(session)
-            state = await repo.routing_state(
-                requested_id,
-                user_id=user_id,
-                enterprise_id=enterprise_id,
-                internal_user_id=internal_user_id,
-                is_internal_user=is_internal_user,
-            )
-            if state is None:
-                raise NotFoundError("Conversation not found")
-            slug, has_messages = state
-        if has_messages:
-            locked_slug = slug
-        else:
-            # Classify after the read commits, so a model call does not sit
-            # inside the database transaction.
-            spec, usage = await choose_agent(entry, message, locked_slug=None)
-            if slug != spec.slug:
-                async with AsyncSessionLocal() as session:
-                    await ConversationRepository(session).set_agent_slug(
-                        requested_id, spec.slug
-                    )
-                    await session.commit()
-            logger.info(
-                "Routed new conversation_id=%s agent=%s",
-                conversation_id,
-                spec.slug,
-            )
-            return spec, usage
-    spec, usage = await choose_agent(entry, message, locked_slug=locked_slug)
-    logger.info(
-        "Routed message agent=%s locked=%s conversation_id=%s",
-        spec.slug,
-        locked_slug,
-        conversation_id,
-    )
-    return spec, usage
 
 
 async def _settle_turn(
@@ -296,9 +237,8 @@ async def send_message(
     identity: tuple[int, int, str, AuthContext | None] = Depends(_resolve_identity),
 ):
     user_id, enterprise_id, token, auth_ctx = identity
-    # The URL is the entry. When that entry routes several agents, the first
-    # message picks one and quota, budget, and the runner all follow it.
-    entry = agent_spec(request)
+    # The URL is the agent. Quota, budget, and the runner all follow this mount.
+    SPEC = agent_spec(request)
     # which conversation list the chat is filed under follows the client's own
     # flags, because that is what GET /conversations/ lists by, filing it under
     # the signed identity instead of hiding it
@@ -313,15 +253,6 @@ async def send_message(
         ctx=auth_ctx,
         body_is_internal_user=body.is_internal_user,
         body_internal_user_id=body.internal_user_id,
-    )
-    SPEC, route_usage = await route_turn(
-        entry,
-        message=body.message,
-        conversation_id=body.conversation_id,
-        user_id=user_id,
-        enterprise_id=enterprise_id,
-        is_internal_user=owner_is_internal_user,
-        internal_user_id=owner_internal_user_id,
     )
 
     async with AsyncSessionLocal() as session:
@@ -477,17 +408,7 @@ async def send_message(
             # itself in a few hours, this one needs an admin to raise the cap or
             # the month to end. The client cannot say the right thing to the
             # user without being able to tell them apart.
-            retry_after = max(
-                0,
-                int(
-                    (
-                        datetime.combine(
-                            budget_state.period_end, datetime.min.time(), timezone.utc
-                        )
-                        - datetime.now(timezone.utc)
-                    ).total_seconds()
-                ),
-            )
+            retry_after = seconds_until(budget_state.period_end)
             raise HTTPException(
                 status_code=429,
                 detail={
@@ -524,7 +445,7 @@ async def send_message(
             completed_secondary_usage: dict[str, int] | None = None
             # Set only on a conversation's first turn; merged into whichever
             # settle path runs so neither can drop it.
-            title_usage: dict[str, int] | None = route_usage
+            title_usage: dict[str, int] | None = None
             usage_settled = False
 
             with trace_span(
@@ -680,7 +601,7 @@ async def send_message(
                             )
                             usage_settled = True
                             thinking = (
-                                _extract_thinking(last_ai_message.content)
+                                message_thinking(last_ai_message.content)
                                 if last_ai_message is not None
                                 else None
                             )

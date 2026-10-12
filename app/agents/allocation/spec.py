@@ -21,5 +21,4 @@ SPEC = AgentSpec(
     build_context_note=build_context_note,
     runtime=RuntimeSettings.from_settings(),
     presentation=PRESENTATION,
-    routes=("allocation", "return_exchange"),
 )

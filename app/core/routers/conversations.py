@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.core.auth.agent_token import resolve_identity
+from app.core.auth.agent_token import resolve_identity, resolve_identity_from_query
 from app.exceptions import BadRequestError, NotFoundError
 from app.core.auth.actor import (
     resolve_internal_user_id,
@@ -38,18 +38,6 @@ async def _resolve_identity_body(
     return await resolve_identity(
         user_id=body.user_id,
         enterprise_id=body.enterprise_id,
-        authorization=authorization,
-    )
-
-
-async def _resolve_identity_query(
-    user_id: int,
-    enterprise_id: int,
-    authorization: str | None = Header(default=None),
-) -> tuple[int, int, str]:
-    return await resolve_identity(
-        user_id=user_id,
-        enterprise_id=enterprise_id,
         authorization=authorization,
     )
 
@@ -92,7 +80,7 @@ async def create_conversation(
 @router.get("/", response_model=list[ConversationSummary])
 async def list_conversations(
     request: Request,
-    identity: tuple[int, int, str] = Depends(_resolve_identity_query),
+    identity: tuple[int, int, str] = Depends(resolve_identity_from_query),
     internal_user_id: str | None = None,
     is_internal_user: bool = False,
     session: AsyncSession = Depends(get_db),
@@ -115,10 +103,7 @@ async def list_conversations(
         enterprise_id=enterprise_id,
         internal_user_id=internal_user_id,
         is_internal_user=is_internal_user,
-        # A mount that routes several agents lists every thread it can open.
-        # A mount with no routes still lists only its own.
         agent_slug=spec.slug,
-        agent_slugs=spec.routes or None,
     )
     logger.info(
         "Listed conversations user_id=%s enterprise_id=%s internal_user_id=%s is_internal_user=%s count=%s",
@@ -155,7 +140,7 @@ async def list_conversations(
 @router.get("/{conversation_id}", response_model=ConversationDetail)
 async def get_conversation(
     conversation_id: str,
-    identity: tuple[int, int, str] = Depends(_resolve_identity_query),
+    identity: tuple[int, int, str] = Depends(resolve_identity_from_query),
     internal_user_id: str | None = None,
     is_internal_user: bool = False,
     session: AsyncSession = Depends(get_db),

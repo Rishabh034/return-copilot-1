@@ -76,7 +76,7 @@ def rows(raw: Any) -> list[dict[str, Any]]:
 
 
 def merge(raws: list[Any]) -> dict[str, Any]:
-    rows: list[dict[str, Any]] = []
+    collected: list[dict[str, Any]] = []
     seen: set[str] = set()
     for raw in raws:
         for row in rows(raw):
@@ -85,10 +85,10 @@ def merge(raws: list[Any]) -> dict[str, Any]:
                 continue
             if rid:
                 seen.add(rid)
-            rows.append(row)
+            collected.append(row)
     base = next((dict(raw) for raw in raws if isinstance(raw, dict)), {})
     result = dict(base.get("result") or {}) if isinstance(base.get("result"), dict) else {}
-    result.update(feed=rows, count=len(rows), current_page=1)
+    result.update(feed=collected, count=len(collected), current_page=1)
     base["result"] = result
     base.setdefault("meta", {"success": True, "status": 200, "message": "SUCCESS"})
     return base

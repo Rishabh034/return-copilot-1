@@ -470,18 +470,6 @@ def _extract_single_allocation(entry: dict) -> tuple[dict[str, Any] | None, dict
     return order, None, timestamps
 
 
-def _extract_allocation_fallback(raw: dict) -> dict | None:
-    for wrapper in ("result", "data", "log"):
-        inner = raw.get(wrapper)
-        if isinstance(inner, dict) and (
-            "filters_ran" in inner or "preference_array" in inner
-        ):
-            return inner
-    if "filters_ran" in raw or "preference_array" in raw:
-        return raw
-    return None
-
-
 def _shape_rr_log(reference_number: str, raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {"reference_number": reference_number, "error": "Unexpected response shape"}

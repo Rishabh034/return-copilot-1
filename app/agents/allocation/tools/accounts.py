@@ -20,12 +20,6 @@ class GetAccountInfoInput(BaseModel):
     )
 
 
-class SearchAccountsInput(BaseModel):
-    query: str = Field(
-        description="Substring to match against account_id, account_code, cp_name or cpid.",
-    )
-
-
 def _shape_account(acc: dict) -> dict:
     return {
         "account_id": acc.get("account_id") or acc.get("id"),

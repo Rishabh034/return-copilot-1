@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
@@ -20,6 +21,11 @@ engine = create_async_engine(
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 # all our model classes will inherit this base class, alembic will use this to discover tables/classes.
+def utc_now() -> datetime:
+    """Column default for timestamp fields (deliberately not app.clock.now_utc)."""
+    return datetime.now(timezone.utc)
+
+
 class Base(DeclarativeBase):
     pass
 

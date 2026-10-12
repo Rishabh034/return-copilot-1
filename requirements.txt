@@ -43,6 +43,10 @@ requests>=2.31,<3
 PyJWT==2.13.0
 cryptography==46.0.0
 confluent-kafka==2.8.0
+# Direct warehouse reads for agent tools (app/clients/databricks.py). Same
+# version clickpost runs; pyarrow is what its cloud fetch decodes results with.
+databricks-sql-connector==4.0.5
+pyarrow==20.0.0
 # LLM tracing to self-hosted Langfuse: langfuse.langchain.CallbackHandler for
 # app/clients/llm.py. Also OTEL-based itself - see app/clients/observability.py.
 langfuse==4.14.3

@@ -16,6 +16,15 @@ _AWS_SECRET_TO_ENV = {
     "CLICKHELP_AI_AGENT_JWT_PUBLIC_KEY": "AGENT_JWT_PUBLIC_KEY",
     "CLICKHELP_LANGFUSE_PUBLIC_KEY": "LANGFUSE_PUBLIC_KEY",
     "CLICKHELP_LANGFUSE_SECRET_KEY": "LANGFUSE_SECRET_KEY",
+    # Not CLICKHELP_-prefixed: the same keys clickpost's scripts_settings_v2
+    # reads for its Databricks jobs (app/clients/databricks.py).
+    "DATABRICKS_DB_HOST_NAME": "DATABRICKS_DB_HOST_NAME",
+    "DATABRICKS_HTTP_PATH": "DATABRICKS_HTTP_PATH",
+    "DATABRICKS_ACCESS_TOKEN": "DATABRICKS_ACCESS_TOKEN",
+    # This service's own Databricks service principal (OAuth M2M); preferred
+    # over the shared token above whenever both halves are present.
+    "CLICKHELP_CLIENT_ID": "DATABRICKS_CLIENT_ID",
+    "CLICKHELP_SECRET_KEY": "DATABRICKS_CLIENT_SECRET",
 }
 
 _from_aws = []
@@ -163,6 +172,21 @@ class Settings(BaseSettings):
     otel_enabled: bool = False
     otel_service_name: str = "clickpost-ai-projects"
     otel_exporter_otlp_endpoint: str = "http://localhost:4317"
+
+    # Direct Databricks SQL reads for agent tools (app/clients/databricks.py),
+    # used where a Clickpost API times out or doesn't expose the columns a tool
+    # needs. Unset = the client reports itself unconfigured; nothing else breaks.
+    databricks_db_host_name: str | None = None
+    databricks_http_path: str | None = None
+    databricks_access_token: str | None = None
+    # Service principal OAuth credentials; used instead of the token when both are set.
+    databricks_client_id: str | None = None
+    databricks_client_secret: str | None = None
+    # Enforced by the warehouse, which cancels the statement. Kept at the tool
+    # timeout above: past it the runner has already given up on the tool, and
+    # a query still running in its worker thread is only spending compute.
+    databricks_statement_timeout_seconds: int = 30
+    databricks_max_rows: int = 5000  # per query, so a missing LIMIT can't flood a tool
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

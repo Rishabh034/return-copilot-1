@@ -6,6 +6,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.clients.llm import create_secondary_chat_model
 from app.clients.observability import langchain_trace_config
+from app.core.content import message_text
 
 logger = logging.getLogger(__name__)
 
@@ -16,20 +17,6 @@ _TITLE_SYSTEM_PROMPT = (
 )
 
 _MAX_TITLE_CHARS = 120
-
-
-def _coerce_text(content: str | list) -> str:
-    """Flatten LangChain message content (str or block list) to plain text."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = [
-            block.get("text", "")
-            for block in content
-            if isinstance(block, dict) and block.get("type") == "text"
-        ]
-        return "".join(parts)
-    return ""
 
 
 async def generate_conversation_title(
@@ -51,7 +38,7 @@ async def generate_conversation_title(
     returned when the title itself is unusable - the tokens were spent whether
     or not we could use the answer.
     """
-    user_text = _coerce_text(user_message).strip()
+    user_text = message_text(user_message).strip()
     if not user_text:
         return None, None
 
@@ -70,7 +57,7 @@ async def generate_conversation_title(
             config=langchain_trace_config(conversation_id, agent_slug=agent_slug),
         )
         usage = getattr(response, "usage_metadata", None) or None
-        title = _coerce_text(response.content).strip().strip('"').strip()
+        title = message_text(response.content).strip().strip('"').strip()
         if not title:
             return None, usage
         return title[:_MAX_TITLE_CHARS], usage

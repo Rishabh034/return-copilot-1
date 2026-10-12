@@ -10,10 +10,10 @@ from app.config import settings
 from app.core.runtime.policy import ToolGroupPolicy
 from app.core.spec import AgentSpec, RuntimeSettings
 
-_AGGREGATE_CONFIG = "get_enterprise_return_exchange_configs"
+AGGREGATE_CONFIG = "get_enterprise_return_exchange_configs"
 
 # Longer phrases first so "return window" beats a bare "refund" mention.
-_CONFIG_BY_PHRASE = (
+CONFIG_BY_PHRASE = (
     ("exchange window", "get_exchange_window_config"),
     ("return window", "get_return_window_config"),
     ("store credit", "get_return_refund_config"),
@@ -26,15 +26,15 @@ _CONFIG_BY_PHRASE = (
 )
 
 
-def _choose_config(names: set[str], user_text: str | None) -> str:
+def choose_config(names: set[str], user_text: str | None) -> str:
     """Prefer the aggregate settings tool; otherwise the phrase the user used."""
-    if _AGGREGATE_CONFIG in names:
-        return _AGGREGATE_CONFIG
+    if AGGREGATE_CONFIG in names:
+        return AGGREGATE_CONFIG
     if user_text:
         text = user_text.lower()
         best: str | None = None
         best_len = -1
-        for phrase, tool_name in _CONFIG_BY_PHRASE:
+        for phrase, tool_name in CONFIG_BY_PHRASE:
             if tool_name in names and phrase in text and len(phrase) > best_len:
                 best = tool_name
                 best_len = len(phrase)
@@ -43,7 +43,7 @@ def _choose_config(names: set[str], user_text: str | None) -> str:
     return sorted(names)[0]
 
 
-def _build_client() -> ReturnExchangeClient:
+def build_client() -> ReturnExchangeClient:
     return ReturnExchangeClient(
         base_url=settings.clickpost_base_url,
         timeout=settings.rr_analyst_tool_timeout,
@@ -59,8 +59,8 @@ SPEC = AgentSpec(
     build_context_note=build_context_note,
     runtime=RuntimeSettings.from_settings(),
     output_filter=PII_FILTER,
-    tool_groups={"rne_config": ToolGroupPolicy(max_per_turn=1, choose=_choose_config)},
-    clients={"return_exchange": _build_client},
+    tool_groups={"rne_config": ToolGroupPolicy(max_per_turn=1, choose=choose_config)},
+    clients={"return_exchange": build_client},
     # Reached through the allocation mount. The chat URL does not change.
     mounted=False,
 )

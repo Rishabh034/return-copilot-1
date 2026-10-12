@@ -15,7 +15,6 @@
 | Warehouse only | `get_warehouse_config` | other config tools |
 | QC only | `get_qc_door_step_config` | other config tools |
 | Exchange products available | `get_exchange_catalogue` (requires domain) | — |
-| Who changed R&E settings? | `fetch_return_exchange_audit_logs` (≤7 days, YYYY-MM-DD; returns a compact change list) | — |
 | Return analytics | `get_rne_overview_return_stats` (dates DD-MM-YYYY) | — |
 
 ### Config tool budget (hard rule)

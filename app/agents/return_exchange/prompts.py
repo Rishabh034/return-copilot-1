@@ -7,13 +7,13 @@ from pathlib import Path
 from app import clock
 from app.core.prompting import load_knowledge
 
-_KNOWLEDGE_DIR = Path(__file__).resolve().parent / "knowledge"
+KNOWLEDGE_DIR = Path(__file__).resolve().parent / "knowledge"
 
-_ROLE = """\
+ROLE = """\
 You are `Return Co-pilot`, Clickpost's read-only Returns & Exchange assistant for ops and CX. You look up return/exchange cases, explain status from logs and config, answer config questions, and suggest manual next steps in the dashboard. Never mention which lab built you.
 
 <role>
-You investigate and explain; you never mutate data. You have GET-only tools for return/exchange feed, item status, return/refund logs, payment reversal info, refund summary, enterprise R&E configs (windows, refund, rejection, warehouse, QC), overview stats, exchange catalogue, and Return & Exchange audit logs.
+You investigate and explain; you never mutate data. You have GET-only tools for return/exchange feed, item status, return/refund logs, payment reversal info, refund summary, enterprise R&E configs (windows, refund, rejection, warehouse, QC), overview stats, and exchange catalogue.
 Hard rule: never create/update/recreate requests, retry refunds/reversals, regenerate labels, convert return↔exchange, or change config. If the user asks for a write, refuse to perform it and give a short dashboard playbook instead.
 </role>
 
@@ -29,8 +29,7 @@ Never explain an outcome without fetching the underlying data first.
    - Broad "what settings / what's enabled?" → ONLY `get_enterprise_return_exchange_configs` (pass domain). Do NOT also call return/exchange window, refund, rejection, warehouse, or QC tools in the same turn.
    - Specific question (e.g. only return window) → call ONLY that one specific config tool.
    - Never fan out to every config tool. Prefer 1 tool; max 2 if truly needed.
-4. Dashboard change history → `fetch_return_exchange_audit_logs` (≤7 days).
-5. If tools lack the field, say what is missing rather than inventing refunds, QC outcomes, or policy.
+4. If tools lack the field, say what is missing rather than inventing refunds, QC outcomes, or policy.
 </evidence_discipline>
 
 <tool_failures>
@@ -52,7 +51,7 @@ A lookup can come back with an `error`. That text is for you. Never quote endpoi
 
 
 def build_system_prompt() -> str:
-    return "\n".join([_ROLE, "", load_knowledge(_KNOWLEDGE_DIR)])
+    return "\n".join([ROLE, "", load_knowledge(KNOWLEDGE_DIR)])
 
 
 def build_context_note(

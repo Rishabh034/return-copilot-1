@@ -19,11 +19,11 @@ from app.core.spec import AgentSpec
 
 logger = logging.getLogger(__name__)
 
-_AGENTS = frozenset({"allocation", "return_exchange"})
+AGENTS = frozenset({"allocation", "return_exchange"})
 
 # Longer, more specific phrases weigh more. A bare "return" is weak on purpose:
 # "return the log" is not a returns question.
-_RETURN_EXCHANGE = (
+RETURN_EXCHANGE = (
     ("return and exchange", 4),
     ("returns and exchange", 4),
     ("return & exchange", 4),
@@ -47,7 +47,7 @@ _RETURN_EXCHANGE = (
     ("return", 2),
 )
 
-_ALLOCATION = (
+ALLOCATION = (
     ("recommendation", 4),
     ("serviceability", 4),
     ("allocation rule", 4),
@@ -58,7 +58,7 @@ _ALLOCATION = (
     ("pincode", 3),
 )
 
-_ROUTER_SYSTEM = (
+ROUTER_SYSTEM = (
     "Route a Clickpost ops question to exactly one agent. "
     "Reply with one word and nothing else: allocation or return_exchange.\n"
     "allocation: courier recommendation, serviceability, why a carrier was picked, "
@@ -70,15 +70,15 @@ _ROUTER_SYSTEM = (
 Completer = Callable[[str], Awaitable[tuple[str, dict[str, int] | None]]]
 
 
-def _score(text: str, phrases: tuple[tuple[str, int], ...]) -> int:
+def score(text: str, phrases: tuple[tuple[str, int], ...]) -> int:
     return sum(weight for phrase, weight in phrases if phrase in text)
 
 
 def route_by_rules(text: str) -> str | None:
     """Return a slug when the wording is clearly one agent, else None."""
     lowered = text.lower()
-    returns = _score(lowered, _RETURN_EXCHANGE)
-    allocation = _score(lowered, _ALLOCATION)
+    returns = score(lowered, RETURN_EXCHANGE)
+    allocation = score(lowered, ALLOCATION)
     if returns >= 3 and returns >= allocation + 2:
         return "return_exchange"
     if allocation >= 3 and allocation >= returns + 2:
@@ -91,12 +91,12 @@ def parse_agent_name(text: str) -> str | None:
     if not cleaned:
         return None
     token = cleaned.split()[0].strip(".,:;\"'`")
-    if token in _AGENTS:
+    if token in AGENTS:
         return token
     return None
 
 
-def _coerce_text(content: str | list) -> str:
+def coerce_text(content: str | list) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -109,16 +109,16 @@ def _coerce_text(content: str | list) -> str:
     return ""
 
 
-async def _default_complete(text: str) -> tuple[str, dict[str, int] | None]:
+async def default_complete(text: str) -> tuple[str, dict[str, int] | None]:
     llm = create_secondary_chat_model()
     response = await llm.ainvoke(
         [
-            SystemMessage(content=_ROUTER_SYSTEM),
+            SystemMessage(content=ROUTER_SYSTEM),
             HumanMessage(content=text[:2000]),
         ]
     )
     usage = serialize_usage(getattr(response, "usage_metadata", None))
-    return _coerce_text(response.content), usage
+    return coerce_text(response.content), usage
 
 
 async def classify_message(
@@ -136,7 +136,7 @@ async def classify_message(
     if ruled is not None:
         return ruled, None
 
-    complete = complete or _default_complete
+    complete = complete or default_complete
     try:
         answer, usage = await complete(text)
     except Exception:

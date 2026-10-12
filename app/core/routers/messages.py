@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _route_turn(
+async def route_turn(
     entry: AgentSpec,
     *,
     message: str,
@@ -314,7 +314,7 @@ async def send_message(
         body_is_internal_user=body.is_internal_user,
         body_internal_user_id=body.internal_user_id,
     )
-    SPEC, route_usage = await _route_turn(
+    SPEC, route_usage = await route_turn(
         entry,
         message=body.message,
         conversation_id=body.conversation_id,

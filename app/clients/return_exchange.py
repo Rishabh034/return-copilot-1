@@ -27,17 +27,16 @@ PATHS = {
     "qc_config": "/api/v1/return-exchange-configuration/general-configuration/qc-door-step-config",
     "return_stats": "/api/v1/dashboard/return-exchange/overview/return-stats",
     "catalogue": "/api/exchange/v1/products",
-    "audit": "/dashboard/api/v1/activity-log",
 }
 
 
 class ReturnExchangeClient:
     def __init__(self, base_url: str, timeout: float = 30.0):
-        self._base_url = base_url.rstrip("/")
-        self._client = httpx.AsyncClient(timeout=timeout, headers={"Accept": "application/json"})
+        self.base_url = base_url.rstrip("/")
+        self.client = httpx.AsyncClient(timeout=timeout, headers={"Accept": "application/json"})
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        await self.client.aclose()
 
     async def get(self, name: str, token: str | None = None, **params: Any) -> Any:
         path = PATHS[name]
@@ -48,7 +47,7 @@ class ReturnExchangeClient:
         }
         headers = {"Authorization": f"Token {token}"} if token else None
         logger.debug("ReturnExchange GET %s params=%s", path, clean)
-        resp = await self._client.get(f"{self._base_url}{path}", params=clean, headers=headers)
+        resp = await self.client.get(f"{self.base_url}{path}", params=clean, headers=headers)
         if resp.status_code in (401, 403):
             raise ClickpostPermissionError(
                 f"Token lacks permission for {path} (HTTP {resp.status_code})."

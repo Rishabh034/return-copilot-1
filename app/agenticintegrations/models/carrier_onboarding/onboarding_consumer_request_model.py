@@ -14,5 +14,5 @@ class OnboardingConsumerRequest(BaseModel):
         if value is None:
             return ""
         if isinstance(value, str):
-                return value.strip()
+            return value.strip()
         raise ValueError("existing_doc_links must be a string")

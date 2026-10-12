@@ -5,21 +5,21 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from app.agents.return_exchange.tools._common import CONFIG_GROUP, rne_client, token
+from app.agents.return_exchange.tools.common import CONFIG_GROUP, rne_client, token
 from app.core.runtime.policy import ToolPolicy, with_policy
 from app.core.tool_context import ToolContext
 
-_CONFIG = ToolPolicy(group=CONFIG_GROUP)
-_ALONE = "Do not combine with get_enterprise_return_exchange_configs."
+CONFIG = ToolPolicy(group=CONFIG_GROUP)
+ALONE = "Do not combine with get_enterprise_return_exchange_configs."
 
 # (tool name, client path, when to use it)
-_SIMPLE = (
-    ("get_return_window_config", "return_window", f"Return window only. {_ALONE}"),
-    ("get_exchange_window_config", "exchange_window", f"Exchange window only. {_ALONE}"),
-    ("get_return_refund_config", "refund_config", f"Refund mode, store credit, or gift card only. {_ALONE}"),
-    ("get_rejection_config", "rejection_config", f"Rejection or non-returnable rules only. {_ALONE}"),
-    ("get_warehouse_config", "warehouse_config", f"Warehouse settings only. {_ALONE}"),
-    ("get_qc_door_step_config", "qc_config", f"QC or doorstep settings only. {_ALONE}"),
+SIMPLE = (
+    ("get_return_window_config", "return_window", f"Return window only. {ALONE}"),
+    ("get_exchange_window_config", "exchange_window", f"Exchange window only. {ALONE}"),
+    ("get_return_refund_config", "refund_config", f"Refund mode, store credit, or gift card only. {ALONE}"),
+    ("get_rejection_config", "rejection_config", f"Rejection or non-returnable rules only. {ALONE}"),
+    ("get_warehouse_config", "warehouse_config", f"Warehouse settings only. {ALONE}"),
+    ("get_qc_door_step_config", "qc_config", f"QC or doorstep settings only. {ALONE}"),
 )
 
 
@@ -38,11 +38,11 @@ class CatalogueInput(BaseModel):
     page: int | None = Field(default=None, description="Optional page number.")
 
 
-def _tool(coroutine, name: str, description: str, schema, *, grouped: bool = False):
+def tool(coroutine, name: str, description: str, schema, *, grouped: bool = False):
     tool = StructuredTool.from_function(
         coroutine=coroutine, name=name, description=description, args_schema=schema
     )
-    return with_policy(tool, _CONFIG) if grouped else tool
+    return with_policy(tool, CONFIG) if grouped else tool
 
 
 def build_tools(context: ToolContext) -> list[StructuredTool]:
@@ -53,7 +53,7 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
         raw = await client.get("enterprise_configs", auth_token, domain=domain)
         return {"query": {"domain": domain}, "result": raw}
 
-    def _simple(path_key: str):
+    def simple(path_key: str):
         async def call() -> dict[str, Any]:
             return {"result": await client.get(path_key, auth_token)}
 
@@ -74,7 +74,7 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
         return {"query": {"domain": domain, **params}, "result": raw}
 
     tools = [
-        _tool(
+        tool(
             get_enterprise_return_exchange_configs,
             "get_enterprise_return_exchange_configs",
             "PRIMARY for a broad 'what settings are on?' question. Requires domain. "
@@ -83,10 +83,10 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
             grouped=True,
         )
     ]
-    for name, path_key, description in _SIMPLE:
-        tools.append(_tool(_simple(path_key), name, description, EmptyInput, grouped=True))
+    for name, path_key, description in SIMPLE:
+        tools.append(tool(simple(path_key), name, description, EmptyInput, grouped=True))
     tools.append(
-        _tool(
+        tool(
             get_exchange_catalogue,
             "get_exchange_catalogue",
             "Browse exchange products for a domain. Narrow with category_id, search, or page.",

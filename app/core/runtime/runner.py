@@ -254,9 +254,10 @@ class AgentRunner:
 
         clients = dict(self._clients)
         clients[CLICKPOST] = self.clickpost_client
+        clients[DATABRICKS] = get_databricks_client()
         tool_context = ToolContext(
             auth=auth,
-            clients={CLICKPOST: self.clickpost_client, DATABRICKS: get_databricks_client()},
+            clients=clients,
             conversation_id=conversation_id,
         )
         tools = self.build_tools(tool_context)

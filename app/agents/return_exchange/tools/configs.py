@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from langchain_core.tools import StructuredTool
@@ -28,11 +29,20 @@ class EmptyInput(BaseModel):
 
 
 class EnterpriseConfigsInput(BaseModel):
-    domain: str = Field(description="Enterprise domain.")
+    domain: str | None = Field(
+        default=None,
+        description=(
+            "Optional returns-portal domain. Omit this — the caller's token already "
+            "selects the enterprise. Pass a domain only if the user typed one."
+        ),
+    )
 
 
 class CatalogueInput(BaseModel):
-    domain: str = Field(description="Enterprise domain. Required.")
+    domain: str | None = Field(
+        default=None,
+        description="Optional. Omit unless the user typed a returns-portal domain.",
+    )
     category_id: str | None = Field(default=None, description="Optional category filter.")
     search: str | None = Field(default=None, description="Optional product search.")
     page: int | None = Field(default=None, description="Optional page number.")
@@ -49,9 +59,42 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
     client = rne_client(context)
     auth_token = token(context)
 
-    async def get_enterprise_return_exchange_configs(domain: str) -> dict[str, Any]:
-        raw = await client.get("enterprise_configs", auth_token, domain=domain)
-        return {"query": {"domain": domain}, "result": raw}
+    async def get_enterprise_return_exchange_configs(domain: str | None = None) -> dict[str, Any]:
+        domain_clean = (domain or "").strip() or None
+        names = (
+            "return_window",
+            "exchange_window",
+            "refund_config",
+            "rejection_config",
+            "warehouse_config",
+            "qc_config",
+        )
+        fetched = await asyncio.gather(
+            *(client.get(name, auth_token) for name in names),
+            return_exceptions=True,
+        )
+        result: dict[str, Any] = {}
+        errors = 0
+        for name, value in zip(names, fetched):
+            if isinstance(value, Exception):
+                result[name] = {"error": str(value)}
+                errors += 1
+            else:
+                result[name] = value
+        if errors < len(names):
+            return {
+                "query": {"source": "token_enterprise"},
+                "result": result,
+                "note": "Loaded via the caller's token. Do not ask for a domain.",
+            }
+        if not domain_clean:
+            return {
+                "query": {"source": "token_enterprise"},
+                "result": result,
+                "error": "Token-scoped config APIs failed. Do not ask the user for a domain.",
+            }
+        raw = await client.get("enterprise_configs", auth_token, domain=domain_clean)
+        return {"query": {"domain": domain_clean, "source": "domain_lookup"}, "result": raw}
 
     def simple(path_key: str):
         async def call() -> dict[str, Any]:
@@ -60,24 +103,30 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
         return call
 
     async def get_exchange_catalogue(
-        domain: str,
+        domain: str | None = None,
         category_id: str | None = None,
         search: str | None = None,
         page: int | None = None,
     ) -> dict[str, Any]:
         params = {
             key: value
-            for key, value in {"category_id": category_id, "search": search, "page": page}.items()
+            for key, value in {
+                "domain": (domain or "").strip() or None,
+                "category_id": category_id,
+                "search": search,
+                "page": page,
+            }.items()
             if value is not None
         }
-        raw = await client.get("catalogue", auth_token, domain=domain, **params)
-        return {"query": {"domain": domain, **params}, "result": raw}
+        raw = await client.get("catalogue", auth_token, **params)
+        return {"query": params, "result": raw}
 
     tools = [
         tool(
             get_enterprise_return_exchange_configs,
             "get_enterprise_return_exchange_configs",
-            "PRIMARY for a broad 'what settings are on?' question. Requires domain. "
+            "PRIMARY for a broad 'what settings are on?' question. The caller's token "
+            "selects the enterprise — do not invent or ask for a domain. "
             "Do not also call a specific window, refund, rejection, warehouse, or QC tool.",
             EnterpriseConfigsInput,
             grouped=True,
@@ -89,7 +138,8 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
         tool(
             get_exchange_catalogue,
             "get_exchange_catalogue",
-            "Browse exchange products for a domain. Narrow with category_id, search, or page.",
+            "Browse exchange products. The token selects the enterprise. "
+            "Pass domain only if the user typed one. Narrow with category_id, search, or page.",
             CatalogueInput,
         )
     )

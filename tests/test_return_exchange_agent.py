@@ -229,3 +229,94 @@ def test_item_status_uses_the_live_shipment_when_the_key_is_present():
         )
     ]
     assert result["result"] == {"milestone": "picked"}
+
+
+def test_item_status_falls_back_to_the_feed_without_a_shipment_key():
+    feed = {"result": {"feed": [{"id": 7, "reference_no": "REF-1", "request_status": "APPROVED"}]}}
+    client = _Client({"feed": feed})
+    tools = _tools(client)
+    result = asyncio.run(tools["get_return_item_status"].ainvoke({"reference_number": "REF-1"}))
+    assert result["query"] == {"return_id": 7, "source": "feed_status_snapshot"}
+    assert result["result"]["request_status"] == "APPROVED"
+    assert [call[0] for call in client.calls] == ["feed", "feed"]
+
+
+def test_item_status_reads_the_shipment_key_from_the_feed():
+    feed = {
+        "result": {
+            "feed": [
+                {
+                    "id": 7,
+                    "request_status": "APPROVED",
+                    "tracking_link": (
+                        "https://track.example/t?waybill=REV1"
+                        "&key=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+                    ),
+                }
+            ]
+        }
+    }
+    client = _Client({"feed": feed, "item_status": {"milestone": "picked"}})
+    tools = _tools(client)
+    result = asyncio.run(tools["get_return_item_status"].ainvoke({"reference_number": "REF-1"}))
+    live = [call for call in client.calls if call[0] == "item_status"]
+    assert live == [
+        (
+            "item_status",
+            "dashboard-token",
+            {
+                "domain": "track.example",
+                "waybill": "REV1",
+                "key": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "return_id": "7",
+            },
+        )
+    ]
+    assert result["result"] == {"milestone": "picked"}
+
+
+def test_config_and_catalogue_do_not_require_a_domain():
+    client = _Client(
+        {
+            "return_window": {"days": 7},
+            "exchange_window": {"days": 10},
+            "refund_config": {"modes": ["original"]},
+            "rejection_config": {},
+            "warehouse_config": {},
+            "qc_config": {},
+            "catalogue": {"products": []},
+        }
+    )
+    tools = _tools(client)
+    configs = asyncio.run(tools["get_enterprise_return_exchange_configs"].ainvoke({}))
+    assert configs["query"] == {"source": "token_enterprise"}
+    assert configs["result"]["return_window"] == {"days": 7}
+    assert "enterprise_configs" not in {call[0] for call in client.calls}
+
+    client.calls.clear()
+    catalogue = asyncio.run(tools["get_exchange_catalogue"].ainvoke({"search": "shirt"}))
+    assert catalogue["query"] == {"search": "shirt"}
+    assert client.calls == [("catalogue", "dashboard-token", {"search": "shirt"})]
+
+
+def test_mask_pii_keeps_awb_and_reference_numbers():
+    text = "Reference RE86145491782107795-2, AWB 1234567890123, order 9876543210"
+    masked = mask_pii(text)
+    assert "RE86145491782107795-2" in masked
+    assert "1234567890123" in masked
+    assert "9876543210" in masked
+
+
+def test_mask_pii_keeps_timestamps_and_hides_payout_links_and_names():
+    text = (
+        "Picked up 2026-10-13 15:39:08. "
+        "**Payout Link** | https://rzp.io/rzp/0lnkONJ "
+        "**Name** | Gurbinder Singh"
+    )
+    masked = mask_pii(text)
+    assert "2026-10-13 15:39:08" in masked
+    assert "0lnkONJ" not in masked
+    assert "rzp.io" not in masked
+    assert "[payout link hidden]" in masked
+    assert "Gurbinder" not in masked
+    assert "Singh" not in masked

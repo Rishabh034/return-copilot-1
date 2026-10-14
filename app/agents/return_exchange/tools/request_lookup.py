@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
@@ -18,8 +19,11 @@ STATUS_FIELDS = (
 )
 NEED_KEY = (
     "Live shipment status needs domain, waybill, and shipment key together. "
-    "Otherwise pass reference_number, awb, or order_id and status comes from the feed."
+    "The shipment key is read from the feed row or its tracking link, not from the user. "
+    "If it is absent, pass reference_number, awb, or order_id and status comes from the feed."
 )
+UUID_KEYS = ("shipment_uuid", "shipment_key", "security_key", "tracking_key", "uuid")
+DOMAIN_KEYS = ("domain", "tracking_domain", "enterprise_domain", "tracking_page_domain")
 
 
 class IdentifierInput(BaseModel):
@@ -32,8 +36,8 @@ class IdentifierInput(BaseModel):
 
 class StatusInput(IdentifierInput):
     return_id: str | None = Field(default=None, description="Request id. Not enough on its own.")
-    domain: str | None = Field(default=None, description="Tracking-page domain. Required with waybill and key.")
-    key: str | None = Field(default=None, description="Shipment UUID. Required with domain and waybill.")
+    domain: str | None = Field(default=None, description="Tracking-page domain, if the user typed one. Otherwise taken from the feed.")
+    key: str | None = Field(default=None, description="Shipment UUID from the feed or tracking link. Do not ask the user for it.")
 
 
 class LogsInput(IdentifierInput):
@@ -94,6 +98,55 @@ def merge(raws: list[Any]) -> dict[str, Any]:
     return base
 
 
+def nonempty(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def is_shipment_key(value: str) -> bool:
+    return value.count("-") == 4
+
+
+def tracking_params(row: dict[str, Any]) -> dict[str, str]:
+    """Domain, waybill, and shipment key live on the feed, not in the chat."""
+    params: dict[str, str] = {}
+    waybill = nonempty(row.get("reverse_awb_no") or row.get("awb_no") or row.get("waybill"))
+    if waybill:
+        params["waybill"] = waybill
+    for name in DOMAIN_KEYS:
+        domain = nonempty(row.get(name))
+        if domain:
+            params["domain"] = domain
+            break
+    for name in UUID_KEYS:
+        candidate = nonempty(row.get(name))
+        if candidate and is_shipment_key(candidate):
+            params["key"] = candidate
+            break
+    link = nonempty(row.get("tracking_link") or row.get("tracking_url"))
+    if not link:
+        return params
+    parsed = urlparse(link)
+    query = {name: values[-1] for name, values in parse_qs(parsed.query).items() if values}
+    if "domain" not in params and parsed.hostname:
+        params["domain"] = parsed.hostname
+    if "waybill" not in params:
+        for alias in ("waybill", "awb", "reverse_awb"):
+            found = nonempty(query.get(alias))
+            if found:
+                params["waybill"] = found
+                break
+    if "key" not in params:
+        for alias in ("key", "shipment_uuid", "security_key"):
+            candidate = nonempty(query.get(alias))
+            if candidate and is_shipment_key(candidate):
+                params["key"] = candidate
+                break
+    return params
+
+
 def tool(coroutine, name: str, description: str, schema) -> StructuredTool:
     return StructuredTool.from_function(
         coroutine=coroutine, name=name, description=description, args_schema=schema
@@ -124,7 +177,7 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
         ]
         meta = {
             **query,
-            "return_modessearched": list(modes),
+            "return_modes_searched": list(modes),
             "queried_at": queried_at,
             "timezone": "Asia/Kolkata",
         }
@@ -160,16 +213,34 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
         )
         if feed_raw is None:
             return feed_query
-        rows = rows(feed_raw)
+        matched = rows(feed_raw)
         if resolved:
-            rows = [row for row in rows if str(row.get("id")) == resolved] or rows
-        if not rows:
+            matched = [row for row in matched if str(row.get("id")) == resolved] or matched
+        if not matched:
             return {
                 "query": feed_query,
                 "error": "No return/exchange found for the given identifier",
                 "feed_result": feed_raw,
             }
-        row = rows[0]
+        row = matched[0]
+        found = tracking_params(row)
+        live_waybill = waybill or found.get("waybill")
+        live_domain = domain_clean or found.get("domain")
+        live_key = key_clean or found.get("key")
+        if live_domain and live_waybill and live_key:
+            params = kept(
+                domain=live_domain,
+                waybill=live_waybill,
+                key=live_key,
+                return_id=str(row["id"]) if row.get("id") is not None else resolved,
+            )
+            raw = await client.get("item_status", token(context), **params)
+            return {
+                "query": params,
+                "result": raw,
+                "queried_at": clock.now_ist().isoformat(timespec="seconds"),
+                "resolved_via_feed": feed_query,
+            }
         return {
             "query": {"return_id": row.get("id"), "source": "feed_status_snapshot"},
             "result": {field: row.get(field) for field in STATUS_FIELDS},
@@ -210,7 +281,14 @@ def build_tools(context: ToolContext) -> list[StructuredTool]:
 
     return [
         tool(get_return_exchange_feed, "get_return_exchange_feed", "PRIMARY lookup by reference_number, AWB, reverse_awb, or order_id. Searches REFUND and EXCHANGE unless return_mode is set. Use the returned id for status and logs.", IdentifierInput),
-        tool(get_return_item_status, "get_return_item_status", NEED_KEY, StatusInput),
+        tool(
+            get_return_item_status,
+            "get_return_item_status",
+            "Status for a reference, AWB, or order id. The shipment key is taken from the feed "
+            "row or its tracking link when that row has one. Do not ask the user for domain or key. "
+            "Without them, the feed status snapshot is returned.",
+            StatusInput,
+        ),
         tool(get_return_and_refund_logs, "get_return_and_refund_logs", "Return and refund timeline. Pass return_id, or a reference, AWB, or order_id to resolve it.", LogsInput),
         tool(get_payment_reversal_info, "get_payment_reversal_info", "Payment reversals for a stuck refund. Dates optional. Read-only.", PaymentReversalInput),
     ]
